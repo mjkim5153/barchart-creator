@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import fastapi, uvicorn, pandas, openpyxl, airportsdata; print\\(''모든 패키지 OK''\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/upload -F \"file=@/c/Users/admin/workspace/barchart creator/examples/flight_schedule_20260316_20260316.xlsx\")",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s \"http://localhost:8000/api/metadata\")",
+      "Bash(curl -s \"http://localhost:8000/api/barchart?airline=KAL\")",
+      "Bash(netstat -ano)",
+      "Bash(python -c \"from data_processor import process_dataframe, filter_for_barchart, compute_summary; print\\(''data_processor OK''\\)\")",
+      "Bash(python3:*)",
+      "Bash(gh auth:*)",
+      "Bash(git:*)"
+    ]
+  }
+}

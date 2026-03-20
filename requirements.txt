@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+requests
+urllib3
+openpyxl
+airportsdata
+pytz
+python-multipart

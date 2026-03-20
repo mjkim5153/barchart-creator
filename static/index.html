@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>운항스케줄 바차트</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+
+<!-- 상단 설정 영역 -->
+<header id="settings-bar">
+  <div class="settings-group">
+    <label for="start-date-input">시작일</label>
+    <input type="date" id="start-date-input" />
+  </div>
+  <div class="settings-group">
+    <label for="end-date-input">종료일</label>
+    <input type="date" id="end-date-input" />
+  </div>
+  <div class="settings-group">
+    <label for="airline-select">항공사</label>
+    <select id="airline-select">
+      <option value="">-- 선택 --</option>
+    </select>
+  </div>
+  <div class="settings-group">
+    <label>NAT</label>
+    <div id="nat-container" class="nat-multiselect"></div>
+  </div>
+  <div class="settings-group">
+    <label for="aircraft-filter">기재</label>
+    <select id="aircraft-filter">
+      <option value="all">전체</option>
+      <option value="icn">인천기재</option>
+      <option value="domestic">국내기재</option>
+    </select>
+  </div>
+  <div class="settings-group btn-group">
+    <button id="search-btn" class="btn btn-primary">검색 (크롤링)</button>
+    <label class="btn btn-secondary" for="upload-input">엑셀 업로드</label>
+    <input type="file" id="upload-input" accept=".xlsx,.xls" style="display:none" />
+    <a href="/api/template" class="btn btn-secondary" style="text-decoration:none">양식 다운로드</a>
+    <button id="download-btn" class="btn btn-secondary">엑셀 다운로드</button>
+  </div>
+  <div id="loading-spinner" class="spinner hidden"></div>
+  <div id="status-msg" class="status-msg"></div>
+</header>
+
+<!-- 메인 콘텐츠 -->
+<div id="main-content">
+
+  <!-- 좌측 요약 패널 -->
+  <aside id="summary-panel">
+    <div class="panel-section">
+      <h3>가동률 분석</h3>
+      <div id="operation-rate-table"></div>
+    </div>
+    <div class="panel-section">
+      <h3>Ground Time 분석</h3>
+      <div class="gt-filter-controls">
+        <select id="gt-route-type">
+          <option value="domestic">국내선</option>
+          <option value="international">국제선</option>
+        </select>
+        <select id="gt-grade-filter">
+          <option value="전체">전체</option>
+          <option value="A">A (소형)</option>
+          <option value="B">B (리저널)</option>
+          <option value="C">C (중형)</option>
+          <option value="D">D (대형)</option>
+          <option value="E">E (초대형)</option>
+        </select>
+      </div>
+      <div id="gt-histogram"></div>
+    </div>
+    <div class="panel-section">
+      <h3>노선별 BT 통계</h3>
+      <div class="route-search">
+        <input type="text" id="route-input" placeholder="예: ICN-GMP" />
+        <button id="route-search-btn" class="btn btn-sm">검색</button>
+      </div>
+      <div id="route-stats-table"></div>
+    </div>
+  </aside>
+
+  <!-- 우측 바차트 영역 -->
+  <main id="barchart-area">
+    <div id="barchart-container">
+      <svg id="barchart-svg"></svg>
+    </div>
+    <div id="tooltip" class="tooltip hidden"></div>
+  </main>
+
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/filters.js"></script>
+<script src="/static/js/barchart.js"></script>
+<script src="/static/js/summary.js"></script>
+<script src="/static/js/main.js"></script>
+</body>
+</html>

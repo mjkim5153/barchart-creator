@@ -1,0 +1,361 @@
+/* ===== 전역 리셋 ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 13px;
+  background: #f4f6f8;
+  color: #333;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== 상단 설정 영역 ===== */
+#settings-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #1a2638;
+  color: #fff;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  min-height: 52px;
+}
+
+.settings-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-group label {
+  font-size: 12px;
+  color: #aec6e8;
+  white-space: nowrap;
+}
+
+#settings-bar input[type="date"],
+#settings-bar select {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #4a6080;
+  background: #243448;
+  color: #fff;
+  font-size: 13px;
+}
+
+.nat-multiselect {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 300px;
+  background: #243448;
+  border: 1px solid #4a6080;
+  border-radius: 4px;
+  padding: 4px 6px;
+  min-height: 30px;
+}
+
+.nat-multiselect label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #cde;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nat-multiselect input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.btn-group { gap: 8px; }
+
+.btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: .85; }
+.btn:active { opacity: .7; }
+
+.btn-primary  { background: #3b82f6; color: #fff; }
+.btn-secondary { background: #64748b; color: #fff; }
+.btn-sm { padding: 3px 8px; font-size: 11px; background: #475569; color: #fff; border-radius: 3px; cursor: pointer; border: none; }
+
+.spinner {
+  width: 20px; height: 20px;
+  border: 3px solid rgba(255,255,255,.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hidden { display: none !important; }
+
+.status-msg {
+  font-size: 12px;
+  color: #93c5fd;
+}
+
+/* ===== 메인 레이아웃 ===== */
+#main-content {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ===== 좌측 요약 패널 ===== */
+#summary-panel {
+  background: #fff;
+  border-right: 1px solid #dde3ec;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-section h3 {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e40af;
+  border-bottom: 1px solid #dde3ec;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+/* #9 통계 카드 */
+.stat-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.stat-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #64748b;
+  margin-bottom: 2px;
+}
+
+.stat-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.stat-highlight {
+  color: #2563eb;
+}
+
+/* 가동률 날짜 필터 */
+.op-date-filter {
+  margin-bottom: 6px;
+}
+.op-date-filter select {
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: 11px;
+  background: #fff;
+  width: 100%;
+}
+
+/* 가동률 테이블 */
+#operation-rate-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#operation-rate-table th {
+  background: #f1f5f9;
+  padding: 3px 4px;
+  text-align: center;
+  border: 1px solid #e2e8f0;
+}
+#operation-rate-table td {
+  padding: 3px 4px;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+
+/* #11 GT 필터 컨트롤 */
+.gt-filter-controls {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.gt-filter-controls select {
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: 11px;
+  background: #fff;
+  flex: 1;
+}
+
+/* #11 GT 분석 테이블 */
+.gt-table-block {
+  margin-bottom: 10px;
+}
+
+.gt-table-block h4 {
+  font-size: 11px;
+  color: #475569;
+  margin-bottom: 3px;
+}
+
+.gt-analysis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+
+.gt-analysis-table th {
+  background: #f1f5f9;
+  padding: 3px 2px;
+  text-align: center;
+  border: 1px solid #e2e8f0;
+  font-weight: 600;
+}
+
+.gt-analysis-table td {
+  padding: 3px 2px;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+
+/* 히스토그램 (기존 호환) */
+.gt-hist-block { margin-bottom: 8px; }
+.gt-hist-block h4 { font-size: 11px; color: #475569; margin-bottom: 2px; }
+
+/* 노선 BT 검색 */
+.route-search {
+  display: flex; gap: 4px; margin-bottom: 6px;
+}
+#route-input {
+  flex: 1;
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+#route-stats-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#route-stats-table th {
+  background: #f1f5f9;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+}
+#route-stats-table td {
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+
+/* ===== 바차트 영역 ===== */
+#barchart-area {
+  position: relative;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+#barchart-container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#barchart-svg {
+  display: block;
+}
+
+/* ===== BAR 색상 ===== */
+.bar-blue   { fill: #3b82f6; }
+.bar-orange { fill: #f97316; }
+.bar-error  { stroke: #ef4444; stroke-width: 2.5px; }
+
+.bar-text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+  dominant-baseline: middle;
+  text-anchor: middle;
+}
+
+.airport-label {
+  fill: #374151;
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.gt-label {
+  fill: #6b7280;
+  font-size: 10px;
+  pointer-events: none;
+  text-anchor: middle;
+}
+
+/* 그리드 선 */
+.x-grid-major line { stroke: #9ca3af; stroke-width: 1px; }
+.x-grid-minor line { stroke: #e5e7eb; stroke-width: .5px; }
+
+/* Y축 */
+.y-axis text { font-size: 11px; fill: #374151; }
+
+/* X축 */
+.x-axis text { font-size: 10px; fill: #6b7280; }
+
+/* ===== 툴팁 ===== */
+.tooltip {
+  position: fixed;
+  background: rgba(15,23,42,.92);
+  color: #f1f5f9;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 9999;
+  max-width: 240px;
+  line-height: 1.6;
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
+}
+
+.tooltip .tt-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 4px;
+  color: #93c5fd;
+}
+
+.tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tooltip .tt-label { color: #94a3b8; }
