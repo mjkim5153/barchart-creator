@@ -82,7 +82,13 @@ async def crawl_data(req: CrawlRequest):
             file_name=file_name,
         )
 
+        if not os.path.exists(file_name):
+            raise HTTPException(status_code=500, detail="데이터 수집 실패: 파일이 생성되지 않았습니다. 서버에서 UBIKAIS API에 접근할 수 없을 수 있습니다.")
+
         df = pd.read_excel(file_name)
+        if df.empty:
+            raise HTTPException(status_code=500, detail="데이터 수집 결과가 비어 있습니다. 서버에서 UBIKAIS API에 접근할 수 없을 수 있습니다.")
+
         _current_df = process_dataframe(df)
         logger.info(f"크롤링 완료: {len(_current_df)} rows")
         return {"status": "ok", "rows": len(_current_df)}

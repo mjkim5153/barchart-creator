@@ -27,9 +27,17 @@ for grade, types in _grade_map.items():
         ACTYPE_GRADE[t] = grade
 
 
+REQUIRED_COLUMNS = {'Fltno', 'Depstn', 'Arrstn', 'Acno', 'Actype', 'Status', 'Bt_idx'}
+
+
 def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """func_ubkais.py 출력 DataFrame에 누락 컬럼 추가 후처리"""
     df = df.copy()
+
+    # 필수 컬럼 검증
+    missing = REQUIRED_COLUMNS - set(df.columns)
+    if missing:
+        raise ValueError(f"필수 컬럼 누락: {', '.join(sorted(missing))}. 데이터 수집이 정상적으로 완료되지 않았을 수 있습니다.")
 
     # Airline_Code: Fltno 앞 3글자
     df['Airline_Code'] = df['Fltno'].str[:3]
