@@ -8,9 +8,17 @@ import logging
 import airportsdata
 import pytz
 
-# 한글 출력을 위한 설정
-sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.detach(), encoding='utf-8')
+# 한글 출력을 위한 설정 (frozen exe 환경 대비 안전 처리)
+if sys.stdout is not None and hasattr(sys.stdout, 'detach'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
+    except Exception:
+        pass
+if sys.stderr is not None and hasattr(sys.stderr, 'detach'):
+    try:
+        sys.stderr = io.TextIOWrapper(sys.stderr.detach(), encoding='utf-8')
+    except Exception:
+        pass
 
 # 'InsecureRequestWarning' 경고 문구 숨기기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

@@ -10,67 +10,149 @@ function renderSummary(data) {
   renderGTTable(data.gt_table || {});
 }
 
-// #9 가동률 → 국적사 전체 테이블 + 날짜 필터 + 가동률 순위
+// 현재 선택된 필터 정보를 문자열로 반환
+function getFilterInfoText() {
+  const startDate = document.getElementById('start-date-input')?.value || '';
+  const endDate = document.getElementById('end-date-input')?.value || '';
+  const airline = (typeof getSelectedAirline === 'function') ? getSelectedAirline() : '';
+  const natList = (typeof getSelectedNatList === 'function') ? getSelectedNatList() : [];
+
+  const dateStr = startDate === endDate ? startDate : `${startDate}~${endDate}`;
+  const airlineStr = airline || '전체';
+  const natStr = natList.length > 0 ? natList.join(', ') : '전체';
+
+  return `기간: ${dateStr} | 항공사: ${airlineStr} | NAT: ${natStr}`;
+}
+
+// #9 가동률 → 국적사 전체 테이블 + 날짜 필터 + 기재 필터 + 등급 필터 + 가동률 순위
 function renderOperationSummary(summary) {
   const container = document.getElementById('operation-rate-table');
-  const rows = summary.rows || [];
+  const rowsByType = summary.rows || {};
   const availableDates = summary.available_dates || [];
   const dailyData = summary.daily || {};
 
-  if (!rows.length) {
+  if (!rowsByType.all || !rowsByType.all.length) {
     container.innerHTML = '<p style="color:#94a3b8;font-size:11px">데이터 없음</p>';
     return;
   }
 
   container.innerHTML = '';
 
-  // 날짜 필터 드롭다운
-  if (availableDates.length > 0) {
-    const filterDiv = document.createElement('div');
-    filterDiv.className = 'op-date-filter';
-    const sel = document.createElement('select');
-    sel.id = 'op-date-filter';
+  // 날짜 + 기재 + 등급 필터 드롭다운 (한 행에 나란히)
+  const filterDiv = document.createElement('div');
+  filterDiv.className = 'op-filter-controls';
 
-    const allOpt = document.createElement('option');
-    allOpt.value = 'all';
-    allOpt.textContent = '전체 기간';
-    sel.appendChild(allOpt);
+  // 날짜 필터
+  const dateSel = document.createElement('select');
+  dateSel.id = 'op-date-filter';
+  const allOpt = document.createElement('option');
+  allOpt.value = 'all';
+  allOpt.textContent = '전체 기간';
+  dateSel.appendChild(allOpt);
+  availableDates.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = d;
+    dateSel.appendChild(opt);
+  });
+  filterDiv.appendChild(dateSel);
 
-    availableDates.forEach(d => {
-      const opt = document.createElement('option');
-      opt.value = d;
-      opt.textContent = d;
-      sel.appendChild(opt);
-    });
+  // #신규 기재 필터 (가동률 표 전용, 바차트 상단의 기재 필터와는 무관)
+  const aircraftSel = document.createElement('select');
+  aircraftSel.id = 'op-aircraft-filter';
+  [['all', '전체'], ['icn', '인천기재'], ['domestic', '국내기재']].forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    aircraftSel.appendChild(opt);
+  });
+  filterDiv.appendChild(aircraftSel);
 
-    sel.addEventListener('change', () => {
-      renderOpTable(sel.value === 'all' ? rows : (dailyData[sel.value] || []), container.querySelector('.op-table-wrap'));
-    });
+  // 등급 필터
+  const gradeSel = document.createElement('select');
+  gradeSel.id = 'op-grade-filter';
+  [['전체', '전체'], ['A', 'A (소형)'], ['B', 'B (리저널)'], ['C', 'C (중형)'], ['D', 'D (대형)'], ['E', 'E (초대형)']].forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    gradeSel.appendChild(opt);
+  });
+  filterDiv.appendChild(gradeSel);
 
-    filterDiv.appendChild(sel);
-    container.appendChild(filterDiv);
-  }
+  container.appendChild(filterDiv);
 
   const tableWrap = document.createElement('div');
   tableWrap.className = 'op-table-wrap';
   container.appendChild(tableWrap);
 
-  renderOpTable(rows, tableWrap);
+  let currentRows = [];
+  function updateCurrentRows() {
+    const baseByType = dateSel.value === 'all' ? rowsByType : (dailyData[dateSel.value] || {});
+    currentRows = baseByType[aircraftSel.value] || [];
+    renderOpTable(currentRows, tableWrap);
+  }
+
+  dateSel.addEventListener('change', updateCurrentRows);
+  aircraftSel.addEventListener('change', updateCurrentRows);
+  gradeSel.addEventListener('change', () => renderOpTable(currentRows, tableWrap));
+
+  updateCurrentRows();
+
+  // 데이터 출처 안내
+  const infoP = document.createElement('p');
+  infoP.className = 'data-info-text';
+  infoP.textContent = `※ 국적사 여객기, 화물기(CGE/CGO/CGC) 제외 | ${getFilterInfoText()}`;
+  container.appendChild(infoP);
+
+  // 등급 미분류 기종 안내
+  const ungraded = _summaryData && _summaryData.ungraded_actypes;
+  if (ungraded && ungraded.length > 0) {
+    const ungradedP = document.createElement('p');
+    ungradedP.className = 'data-info-ungraded';
+    const list = ungraded.map(u => `${u.Actype}(${u.count}편)`).join(', ');
+    ungradedP.textContent = `※ 등급 미분류 기종: ${list} — 등급 매핑 테이블에 미등록`;
+    container.appendChild(ungradedP);
+  }
 }
 
 function renderOpTable(rows, wrap) {
-  if (!rows.length) {
+  const gradeFilter = document.getElementById('op-grade-filter')?.value || '전체';
+
+  // 선택된 등급에 따라 표시 데이터 결정
+  const displayRows = rows.map(r => {
+    if (!r.by_grade) {
+      // by_grade 없는 구버전 데이터 호환
+      return {
+        airline: r.airline,
+        aircraft_count: r.operating_aircraft,
+        aircraft_ratio: null,
+        planned_bt: r.planned_bt,
+        hours_per_aircraft: r.hours_per_aircraft,
+      };
+    }
+    const gd = r.by_grade[gradeFilter];
+    if (!gd) return null;
+    return {
+      airline: r.airline,
+      aircraft_count: gd.aircraft_count,
+      aircraft_ratio: gradeFilter === '전체' ? null : gd.aircraft_ratio,
+      planned_bt: gd.planned_bt,
+      hours_per_aircraft: gd.hours_per_aircraft,
+    };
+  }).filter(r => r && r.aircraft_count > 0);
+
+  if (!displayRows.length) {
     wrap.innerHTML = '<p style="color:#94a3b8;font-size:11px">데이터 없음</p>';
     return;
   }
 
-  // 가동시간 오름차순 정렬 (낮은 가동시간 = 높은 순위)
-  const sorted = [...rows].sort((a, b) => b.hours_per_aircraft - a.hours_per_aircraft);
+  // 가동시간 내림차순 정렬
+  const sorted = [...displayRows].sort((a, b) => b.hours_per_aircraft - a.hours_per_aircraft);
 
   const table = document.createElement('table');
   const thead = table.createTHead();
   const hRow = thead.insertRow();
-  ['순위', '국적사', '평균기재수', '계획BT(분)', '가동시간(h)'].forEach(h => {
+  ['순위', '국적사', '기재수', '계획BT(분)', '가동시간(h)'].forEach(h => {
     const th = document.createElement('th');
     th.textContent = h;
     hRow.appendChild(th);
@@ -79,7 +161,10 @@ function renderOpTable(rows, wrap) {
   const tbody = table.createTBody();
   sorted.forEach((r, idx) => {
     const tr = tbody.insertRow();
-    [`${idx + 1}`, r.airline, `${r.operating_aircraft}`, r.planned_bt.toLocaleString(), `${r.hours_per_aircraft}`].forEach(v => {
+    const acText = r.aircraft_ratio !== null
+      ? `${r.aircraft_count}(${r.aircraft_ratio}%)`
+      : `${r.aircraft_count}`;
+    [`${idx + 1}`, r.airline, acText, r.planned_bt.toLocaleString(), `${r.hours_per_aircraft}`].forEach(v => {
       const td = tr.insertCell();
       td.textContent = v;
     });
@@ -135,7 +220,7 @@ function renderGTTable(gtTable) {
     const table = document.createElement('table');
     table.className = 'gt-analysis-table';
 
-    // 헤더
+    // 헤더 (총계 열 추가)
     const thead = table.createTHead();
     const hRow = thead.insertRow();
     const thEmpty = document.createElement('th');
@@ -146,9 +231,30 @@ function renderGTTable(gtTable) {
       th.textContent = label;
       hRow.appendChild(th);
     });
+    const thTotal = document.createElement('th');
+    thTotal.textContent = '총계';
+    hRow.appendChild(thTotal);
 
-    // 비중 행
     const tbody = table.createTBody();
+
+    // 운항편 행 (툴팁 대신 명시적 행으로)
+    const countRow = tbody.insertRow();
+    const countLabel = countRow.insertCell();
+    countLabel.textContent = '운항편';
+    countLabel.style.fontWeight = '600';
+    let totalCount = 0;
+    binLabels.forEach(bin => {
+      const td = countRow.insertCell();
+      const binData = data[bin];
+      const cnt = binData ? binData.count : 0;
+      totalCount += cnt;
+      td.textContent = cnt;
+    });
+    const countTotalCell = countRow.insertCell();
+    countTotalCell.textContent = totalCount;
+    countTotalCell.style.fontWeight = '700';
+
+    // 비중(%) 행
     const pctRow = tbody.insertRow();
     const pctLabel = pctRow.insertCell();
     pctLabel.textContent = '비중(%)';
@@ -159,8 +265,6 @@ function renderGTTable(gtTable) {
       const binData = data[bin];
       if (binData) {
         td.textContent = `${binData.pct}%`;
-        td.title = `${binData.count}편`;
-        td.style.cursor = 'default';
         // 비중 높을수록 진한 배경
         if (binData.pct >= 30) {
           td.style.background = '#fecaca';
@@ -171,10 +275,29 @@ function renderGTTable(gtTable) {
         td.textContent = '-';
       }
     });
+    const pctTotalCell = pctRow.insertCell();
+    pctTotalCell.textContent = '100%';
+    pctTotalCell.style.fontWeight = '700';
 
     block.appendChild(table);
     container.appendChild(block);
   });
+
+  // 데이터 출처 안내
+  const infoP = document.createElement('p');
+  infoP.className = 'data-info-text';
+  infoP.textContent = `※ 국적사 여객기, Status≠CNL, Bt_idx=Y | ${getFilterInfoText()} | 첫편(연결편 없음)은 최대 GT구간에 포함`;
+  container.appendChild(infoP);
+
+  // 등급 미분류 기종 안내
+  const ungraded = _summaryData && _summaryData.ungraded_actypes;
+  if (ungraded && ungraded.length > 0) {
+    const ungradedP = document.createElement('p');
+    ungradedP.className = 'data-info-ungraded';
+    const list = ungraded.map(u => `${u.Actype}(${u.count}편)`).join(', ');
+    ungradedP.textContent = `※ 등급 미분류 기종: ${list} — 등급 매핑 테이블에 미등록`;
+    container.appendChild(ungradedP);
+  }
 }
 
 // GT 필터 변경 시 테이블만 다시 렌더링
@@ -221,4 +344,10 @@ function searchRouteStats(route) {
 
   container.innerHTML = '';
   container.appendChild(table);
+
+  // 데이터 출처 안내
+  const infoP = document.createElement('p');
+  infoP.className = 'data-info-text';
+  infoP.textContent = `※ 국적사 전체, Status≠CNL, Bt_idx=Y | ${getFilterInfoText()}`;
+  container.appendChild(infoP);
 }

@@ -9,6 +9,10 @@ const ROW_HEIGHT = BAR_HEIGHT + BAR_PADDING + 16;
 const MARGIN = { top: 62, right: 20, bottom: 20, left: 110 };
 const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
 const MIN_TEXT_PX = 50;
+const KOREAN_AIRPORTS = new Set([
+  'ICN', 'GMP', 'PUS', 'CJU', 'KWJ', 'CJJ', 'YNY', 'CNJ', 'MWX',
+  'TAE', 'HIN', 'KUV', 'KPO', 'RSU', 'USN', 'WJU', 'CHN', 'JDG', 'JCN'
+]);
 
 let _zoomBehavior = null;
 let _currentData = null;
@@ -307,15 +311,29 @@ function renderBarchart(data) {
           .attr('fill', '#d9d9d9');
       }
 
+      // 번호 + 기번 (좌측 정렬)
       yAxisGroup.append('text')
-        .attr('x', -6)
+        .attr('x', -MARGIN.left + 4)
         .attr('y', yPos + scaledRowH / 2)
-        .attr('text-anchor', 'end')
+        .attr('text-anchor', 'start')
         .attr('dominant-baseline', 'middle')
         .attr('fill', ac && ac.connection_error ? '#ef4444' : '#374151')
         .attr('font-weight', ac && ac.connection_error ? '700' : '400')
         .attr('font-size', '11px')
         .text(`${idx + 1} ${acno}`);
+
+      // 기종 등급 (우측 정렬)
+      const grade = ac && ac.flights.length > 0 ? ac.flights[0].actype_grade : '';
+      if (grade) {
+        yAxisGroup.append('text')
+          .attr('x', -4)
+          .attr('y', yPos + scaledRowH / 2)
+          .attr('text-anchor', 'end')
+          .attr('dominant-baseline', 'middle')
+          .attr('fill', '#94a3b8')
+          .attr('font-size', '10px')
+          .text(`${grade}급`);
+      }
     });
 
     // --- BAR ---
@@ -344,7 +362,7 @@ function renderBarchart(data) {
         if (x2 < clipL || x1 > clipR) return;
         const barW = Math.max(1, x2 - x1);
 
-        const colorClass = fl.color === 'blue' ? 'bar-blue' : 'bar-orange';
+        const colorClass = fl.color === 'navy' ? 'bar-navy' : fl.color === 'cobalt' ? 'bar-cobalt' : 'bar-gray';
 
         const barRect = barGroup.append('rect')
           .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}`)
@@ -385,10 +403,15 @@ function renderBarchart(data) {
           if (prevFl.sta_kst) {
             const prevSta = new Date(prevFl.sta_kst);
             const gtX = (shiftedXScale(prevSta) + shiftedXScale(std)) / 2;
+            const isDomestic = KOREAN_AIRPORTS.has((fl.depstn || '').trim().toUpperCase())
+                            && KOREAN_AIRPORTS.has((fl.arrstn || '').trim().toUpperCase());
+            const isDomWarn = isDomestic && fl.ground_time_before <= 35;
             barGroup.append('text')
               .attr('class', 'gt-label')
               .attr('x', gtX)
               .attr('y', barY + scaledBarH / 2)
+              .attr('fill', isDomWarn ? '#dc2626' : '#6b7280')
+              .attr('font-weight', isDomWarn ? '700' : 'normal')
               .text(`${fl.ground_time_before}분`);
           }
         }

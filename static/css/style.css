@@ -110,7 +110,7 @@ body {
 /* ===== 메인 레이아웃 ===== */
 #main-content {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 400px 1fr;
   flex: 1;
   overflow: hidden;
 }
@@ -197,6 +197,23 @@ body {
   text-align: center;
 }
 
+/* 가동률 등급 필터 컨트롤 */
+.op-filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.op-filter-controls select {
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-size: 11px;
+  background: #fff;
+  flex: 1;
+}
+
 /* #11 GT 필터 컨트롤 */
 .gt-filter-controls {
   display: flex;
@@ -219,7 +236,7 @@ body {
 }
 
 .gt-table-block h4 {
-  font-size: 11px;
+  font-size: 12px;
   color: #475569;
   margin-bottom: 3px;
 }
@@ -227,19 +244,19 @@ body {
 .gt-analysis-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .gt-analysis-table th {
   background: #f1f5f9;
-  padding: 3px 2px;
+  padding: 4px 3px;
   text-align: center;
   border: 1px solid #e2e8f0;
   font-weight: 600;
 }
 
 .gt-analysis-table td {
-  padding: 3px 2px;
+  padding: 4px 3px;
   border: 1px solid #e2e8f0;
   text-align: center;
 }
@@ -263,15 +280,15 @@ body {
 #route-stats-table table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: 12px;
 }
 #route-stats-table th {
   background: #f1f5f9;
-  padding: 3px;
+  padding: 4px;
   border: 1px solid #e2e8f0;
 }
 #route-stats-table td {
-  padding: 3px;
+  padding: 4px;
   border: 1px solid #e2e8f0;
   text-align: center;
 }
@@ -294,8 +311,9 @@ body {
 }
 
 /* ===== BAR 색상 ===== */
-.bar-blue   { fill: #3b82f6; }
-.bar-orange { fill: #f97316; }
+.bar-navy   { fill: #003580; }   /* 국내선 - 제주 노선 (네이비) */
+.bar-cobalt { fill: #1a56c4; }   /* 국내선 - 일반 (코발트 블루) */
+.bar-gray   { fill: #4a4a52; }   /* 국제선 (진한 회색) */
 .bar-error  { stroke: #ef4444; stroke-width: 2.5px; }
 
 .bar-text {
@@ -314,7 +332,6 @@ body {
 }
 
 .gt-label {
-  fill: #6b7280;
   font-size: 10px;
   pointer-events: none;
   text-anchor: middle;
@@ -359,3 +376,18 @@ body {
 }
 
 .tooltip .tt-label { color: #94a3b8; }
+
+/* 데이터 출처 안내 문구 */
+.data-info-text {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.data-info-ungraded {
+  font-size: 10px;
+  color: #f97316;
+  margin-top: 3px;
+  line-height: 1.4;
+}
