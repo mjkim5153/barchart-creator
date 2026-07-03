@@ -13,6 +13,24 @@ from pydantic import BaseModel
 
 from data_processor import process_dataframe, filter_for_barchart, compute_summary
 
+
+def _get_base_path():
+    """번들된 리소스(static/, examples/) 경로"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+def _get_app_dir():
+    """실행파일 위치 (쓰기 가능 data/ 폴더용)"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+BASE_PATH = _get_base_path()
+APP_DIR = _get_app_dir()
+
 # func_ubkais는 임포트 시 sys.stdout/stderr의 버퍼를 detach하므로,
 # 임포트 전에 더미 스트림으로 교체하여 원본 버퍼를 보호한다.
 _orig_stdout = sys.stdout
@@ -30,13 +48,28 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BarChart Creator")
 
+
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    """정적 파일(JS/CSS)에 대해 브라우저가 항상 서버에 재검증하도록 강제.
+
+    Cache-Control 헤더가 없으면 브라우저가 휴리스틱 캐싱으로 구버전 JS를
+    계속 사용해, 백엔드 API 응답 구조가 바뀌어도 프론트가 갱신되지 않는
+    문제(예: 가동률 표가 최신 데이터에도 "데이터 없음"으로 표출)가 발생한다.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 # 정적 파일 서빙
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(BASE_PATH / "static")), name="static")
 
 # 인메모리 캐시
 _current_df: pd.DataFrame | None = None
 
-DATA_DIR = Path("data")
+DATA_DIR = APP_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 ICAO_CODES = [
@@ -58,7 +91,7 @@ ICAO_CODES = [
 
 @app.get("/")
 async def root():
-    return FileResponse("static/index.html")
+    return FileResponse(str(BASE_PATH / "static" / "index.html"))
 
 
 class CrawlRequest(BaseModel):
@@ -195,7 +228,7 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
 
     # Sheet 1: 요약정보 (가동률 + GT 분석)
     summary = compute_summary(_current_df, nat_list, airline)
-    op_rows = summary.get('operation_summary', {}).get('rows', [])
+    op_rows = summary.get('operation_summary', {}).get('rows', {}).get('all', [])
     summary_df = pd.DataFrame(op_rows) if op_rows else pd.DataFrame()
 
     # GT 분석 데이터를 테이블 형태로 변환
@@ -266,4 +299,15 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    import webbrowser
+    import threading
+
+    def _open_browser():
+        import time
+        time.sleep(1.5)
+        webbrowser.open("http://127.0.0.1:8000")
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+    print("서버 시작: http://127.0.0.1:8000")
+    print("종료하려면 이 창을 닫거나 Ctrl+C를 누르세요.")
+    uvicorn.run(app, host="127.0.0.1", port=8000)
