@@ -20,6 +20,8 @@ const spinner = document.getElementById('loading-spinner');
 const statusMsg = document.getElementById('status-msg');
 const routeSearchBtn = document.getElementById('route-search-btn');
 const routeInput = document.getElementById('route-input');
+const panelToggleBtn = document.getElementById('panel-toggle-btn');
+const mainContent = document.getElementById('main-content');
 
 function showLoading(msg) {
   spinner.classList.remove('hidden');
@@ -89,6 +91,18 @@ async function refreshCharts() {
   }
 }
 
+// 기번(Acno) 드래그 재배정 — barchart.js에서 드롭 시 호출
+async function reassignAcno(rowId, newAcno) {
+  try {
+    showLoading('기번 변경 적용 중...');
+    const result = await updateAcno(rowId, newAcno);
+    hideLoading(`기번 변경 완료: ${result.old_acno} → ${result.new_acno}`);
+    await refreshCharts();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
 // 검색 (크롤링)
 searchBtn.addEventListener('click', async () => {
   const startDate = document.getElementById('start-date-input').value;
@@ -149,6 +163,37 @@ document.getElementById('download-btn').addEventListener('click', () => {
   if (airline) params.set('airline', airline);
   if (natList.length) params.set('nat', natList.join(','));
   window.location.href = `/api/download?${params}`;
+});
+
+// 바차트 이미지(JPEG) 저장
+const exportJpegBtn = document.getElementById('export-jpeg-btn');
+exportJpegBtn.addEventListener('click', () => {
+  exportJpegBtn.disabled = true;
+  showLoading('이미지 생성 중...');
+  exportBarchartAsJpeg(() => {
+    exportJpegBtn.disabled = false;
+    hideLoading();
+  });
+});
+
+// 통계 패널 표시/숨기기
+const SUMMARY_PANEL_STORAGE_KEY = 'summaryPanelCollapsed';
+
+function applyPanelState(collapsed) {
+  mainContent.classList.toggle('summary-collapsed', collapsed);
+  panelToggleBtn.textContent = collapsed ? '통계 패널 보이기' : '통계 패널 숨기기';
+}
+
+applyPanelState(localStorage.getItem(SUMMARY_PANEL_STORAGE_KEY) === '1');
+
+panelToggleBtn.addEventListener('click', () => {
+  const collapsed = !mainContent.classList.contains('summary-collapsed');
+  applyPanelState(collapsed);
+  localStorage.setItem(SUMMARY_PANEL_STORAGE_KEY, collapsed ? '1' : '0');
+
+  // 패널 토글로 바차트 컨테이너 폭이 바뀌므로 마지막 데이터로 재렌더링
+  const data = getCurrentBarchartData();
+  if (data) renderBarchart(data);
 });
 
 // 초기 안내

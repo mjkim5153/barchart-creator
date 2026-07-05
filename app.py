@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from data_processor import process_dataframe, filter_for_barchart, compute_summary
+from data_processor import process_dataframe, filter_for_barchart, compute_summary, get_actype_grade
 
 
 def _get_base_path():
@@ -97,6 +97,11 @@ async def root():
 class CrawlRequest(BaseModel):
     start_date: str  # yyyymmdd
     end_date: str    # yyyymmdd
+
+
+class UpdateAcnoRequest(BaseModel):
+    row_id: int
+    new_acno: str
 
 
 @app.post("/api/crawl")
@@ -214,6 +219,45 @@ async def download_template():
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         headers={'Content-Disposition': 'attachment; filename=upload_template.xlsx'}
     )
+
+
+@app.post("/api/update-acno")
+async def update_acno(req: UpdateAcnoRequest):
+    """드래그 재배정: 특정 원본 행의 Acno(+ 파생 Actype/Actype_Grade)를 변경"""
+    global _current_df
+    if _current_df is None:
+        raise HTTPException(status_code=404, detail="데이터 없음.")
+
+    if req.row_id not in _current_df.index:
+        raise HTTPException(status_code=404, detail=f"row_id {req.row_id}에 해당하는 행을 찾을 수 없습니다. 데이터가 갱신되었을 수 있습니다.")
+
+    new_acno = req.new_acno.strip()
+    if new_acno not in _current_df['Acno'].astype(str).values:
+        raise HTTPException(status_code=400, detail=f"기번 '{new_acno}'이(가) 현재 데이터에 존재하지 않습니다.")
+
+    old_acno = str(_current_df.loc[req.row_id, 'Acno'])
+    if old_acno == new_acno:
+        return {"status": "ok", "changed": False, "old_acno": old_acno, "new_acno": new_acno}
+
+    target_rows = _current_df[_current_df['Acno'].astype(str) == new_acno]
+    actype_mode = target_rows['Actype'].mode()
+    new_actype = str(actype_mode.iloc[0]) if not actype_mode.empty else str(_current_df.loc[req.row_id, 'Actype'])
+
+    # Bt_idx는 Sch_date_KST+Fltno로 그룹화되어 DEP/ARR 짝을 이루므로(func_ubkais.py assign_bt_idx),
+    # 같은 편의 짝 레코드도 함께 갱신하지 않으면 RAW 시트에서 기번이 어긋난다.
+    sch_date = _current_df.loc[req.row_id, 'Sch_date_KST']
+    fltno = _current_df.loc[req.row_id, 'Fltno']
+    pair_mask = (_current_df['Sch_date_KST'] == sch_date) & (_current_df['Fltno'] == fltno)
+
+    _current_df.loc[pair_mask, 'Acno'] = new_acno
+    _current_df.loc[pair_mask, 'Actype'] = new_actype
+    _current_df.loc[pair_mask, 'Actype_Grade'] = get_actype_grade(new_actype)
+
+    logger.info(f"기번 재배정: row_id={req.row_id} {old_acno} -> {new_acno} (Actype={new_actype}, 대상행수={int(pair_mask.sum())})")
+    return {
+        "status": "ok", "changed": True,
+        "old_acno": old_acno, "new_acno": new_acno, "new_actype": new_actype,
+    }
 
 
 @app.get("/api/download")

@@ -14,9 +14,24 @@ const KOREAN_AIRPORTS = new Set([
   'TAE', 'HIN', 'KUV', 'KPO', 'RSU', 'USN', 'WJU', 'CHN', 'JDG', 'JCN'
 ]);
 
+// JPEG 내보내기 설정
+const EXPORT_SCALE = 3;
+const EXPORT_MAX_CANVAS_DIM = 16000;
+const EXPORT_MAX_CANVAS_PIXELS = 40000000;
+
 let _zoomBehavior = null;
 let _currentData = null;
 let _keydownHandler = null;
+let _dragMoveHandler = null;
+let _dragUpHandler = null;
+let _wheelHandler = null;
+
+// 줌/스크롤 상태 (renderBarchart 재호출 시에도 유지 — 기번 재배정 후
+// refreshCharts()가 다시 그릴 때 사용자가 맞춰둔 배율/위치가 초기화되지 않도록 모듈 전역으로 보관)
+let _xZoom = 1;
+let _yZoom = 1;
+let _scrollY = 0;
+let _xOffset = 0;
 
 function renderBarchart(data) {
   _currentData = data;
@@ -30,10 +45,13 @@ function renderBarchart(data) {
   const totalRows = aircraft.length;
   const chartW = Math.max(containerW, 1400);
 
-  // 줌 상태
-  let xZoom = 1;
-  let yZoom = 1;
-  let scrollY = 0;
+  // 줌 상태 (모듈 전역에 보관된 이전 값 이어받기)
+  let xZoom = _xZoom;
+  let yZoom = _yZoom;
+  let scrollY = _scrollY;
+
+  // 기번 재배정 드래그 상태
+  let dragState = null;
 
   // 데이터에서 최소/최대 날짜 산출
   let minDate = null;
@@ -76,6 +94,7 @@ function renderBarchart(data) {
   const svg = d3.select('#barchart-svg')
     .attr('width', chartW)
     .attr('height', containerH);
+  const svgNode = svg.node();
 
   svg.selectAll('*').remove();
 
@@ -146,6 +165,9 @@ function renderBarchart(data) {
   const rowLines = zoomGroup.append('g').attr('class', 'row-lines');
   const barGroup = zoomGroup.append('g').attr('class', 'bars');
 
+  // 기번 재배정 드래그용 최상위 레이어 (redrawAll이 지우지 않음)
+  const dragLayer = svg.append('g').attr('class', 'drag-layer');
+
   function getCurrentXScale() {
     const totalXWidth = chartW - MARGIN.left - MARGIN.right;
     const scaledWidth = totalXWidth * xZoom;
@@ -154,7 +176,7 @@ function renderBarchart(data) {
       .range([MARGIN.left, MARGIN.left + scaledWidth]);
   }
 
-  let xOffset = 0;
+  let xOffset = _xOffset;
 
   function getClampedXOffset(offset, xScale) {
     const rangeWidth = xScale.range()[1] - xScale.range()[0];
@@ -162,6 +184,15 @@ function renderBarchart(data) {
     if (rangeWidth <= viewWidth) return 0;
     const minOffset = -(rangeWidth - viewWidth);
     return Math.max(minOffset, Math.min(0, offset));
+  }
+
+  function pixelYToRowIdx(svgY) {
+    const scaledRowH = getScaledRowHeight();
+    return Math.floor((svgY - MARGIN.top + scrollY) / scaledRowH);
+  }
+
+  function clientYToSvgY(clientY) {
+    return clientY - svgNode.getBoundingClientRect().top;
   }
 
   function redrawAll() {
@@ -371,7 +402,7 @@ function renderBarchart(data) {
           .attr('width', barW)
           .attr('height', scaledBarH)
           .attr('rx', 3)
-          .style('cursor', 'pointer');
+          .style('cursor', 'grab');
 
         if (showText && barW >= MIN_TEXT_PX) {
           barGroup.append('text')
@@ -416,8 +447,22 @@ function renderBarchart(data) {
           }
         }
 
+        // 기번 재배정 드래그 시작
+        barRect.on('mousedown', (event) => {
+          event.preventDefault();
+          tooltip.classList.add('hidden');
+          dragState = {
+            fl, sourceRowIdx: acIdx,
+            x1, barW, barH: scaledBarH,
+            targetRowIdx: acIdx, autoScrollDir: 0, rafId: null,
+            lastClientY: event.clientY, startClientY: event.clientY,
+            moved: false,
+          };
+        });
+
         // 툴팁
         barRect.on('mousemove', (event) => {
+          if (dragState) return;
           const gtText = fl.ground_time_before !== null ? `${fl.ground_time_before}분` : '-';
           tooltip.classList.remove('hidden');
           tooltip.innerHTML = `
@@ -438,14 +483,85 @@ function renderBarchart(data) {
         });
       });
     });
+
+    // 다음 renderBarchart() 호출(필터 변경, 기번 재배정 후 재조회 등) 시에도
+    // 현재 배율/스크롤 위치가 유지되도록 모듈 전역 상태에 동기화
+    _xZoom = xZoom;
+    _yZoom = yZoom;
+    _scrollY = scrollY;
+    _xOffset = xOffset;
+  }
+
+  function updateGhost() {
+    const svgY = clientYToSvgY(dragState.lastClientY);
+    const ghostY = svgY - dragState.barH / 2;
+
+    dragLayer.selectAll('*').remove();
+    dragLayer.append('rect')
+      .attr('class', 'bar-drag-ghost')
+      .attr('x', dragState.x1)
+      .attr('y', ghostY)
+      .attr('width', dragState.barW)
+      .attr('height', dragState.barH)
+      .attr('rx', 3);
+    dragLayer.append('text')
+      .attr('class', 'bar-drag-ghost-text')
+      .attr('x', dragState.x1 + dragState.barW / 2)
+      .attr('y', ghostY + dragState.barH / 2)
+      .text(dragState.fl.fltno);
+
+    const rowIdx = pixelYToRowIdx(svgY);
+    dragState.targetRowIdx = (rowIdx >= 0 && rowIdx < totalRows) ? rowIdx : null;
+    if (dragState.targetRowIdx !== null) {
+      const scaledRowH = getScaledRowHeight();
+      dragLayer.append('rect')
+        .attr('class', 'row-drop-highlight')
+        .attr('x', MARGIN.left)
+        .attr('y', MARGIN.top + dragState.targetRowIdx * scaledRowH - scrollY)
+        .attr('width', chartW - MARGIN.left - MARGIN.right)
+        .attr('height', scaledRowH);
+    }
+
+    const edgeZone = 40;
+    if (svgY < MARGIN.top + edgeZone) dragState.autoScrollDir = -1;
+    else if (svgY > containerH - edgeZone) dragState.autoScrollDir = 1;
+    else dragState.autoScrollDir = 0;
+
+    if (dragState.autoScrollDir !== 0 && !dragState.rafId) startAutoScroll();
+    else if (dragState.autoScrollDir === 0 && dragState.rafId) stopAutoScroll();
+  }
+
+  function startAutoScroll() {
+    const step = () => {
+      if (!dragState || dragState.autoScrollDir === 0) { if (dragState) dragState.rafId = null; return; }
+      scrollY += dragState.autoScrollDir * 15;
+      const scaledRowH = getScaledRowHeight();
+      const maxScrollY = Math.max(0, MARGIN.top + totalRows * scaledRowH + MARGIN.bottom - containerH);
+      scrollY = Math.max(0, Math.min(scrollY, maxScrollY));
+      redrawAll();
+      updateGhost();
+      dragState.rafId = requestAnimationFrame(step);
+    };
+    dragState.rafId = requestAnimationFrame(step);
+  }
+
+  function stopAutoScroll() {
+    if (dragState && dragState.rafId) {
+      cancelAnimationFrame(dragState.rafId);
+      dragState.rafId = null;
+    }
   }
 
   // 초기 렌더링
   redrawAll();
 
   // --- 커스텀 휠 핸들러 ---
-  const svgNode = svg.node();
-  svgNode.addEventListener('wheel', (event) => {
+  // svgNode(#barchart-svg)는 redrawAll()에서 자식만 지워질 뿐 재생성되지 않으므로,
+  // renderBarchart() 재호출 시 이전 리스너를 제거하지 않으면 계속 누적되어
+  // 휠 이벤트마다 redrawAll()이 중복 호출되며 버퍼링이 점점 심해진다.
+  if (_wheelHandler) svgNode.removeEventListener('wheel', _wheelHandler);
+
+  _wheelHandler = (event) => {
     event.preventDefault();
 
     if (event.ctrlKey || event.metaKey) {
@@ -457,7 +573,10 @@ function renderBarchart(data) {
       scrollY += event.deltaY;
       redrawAll();
     }
-  }, { passive: false });
+    if (dragState) updateGhost();
+  };
+
+  svgNode.addEventListener('wheel', _wheelHandler, { passive: false });
 
   // --- 키보드 핸들러 (방향키 스크롤 + Ctrl+방향키 줌) ---
   if (_keydownHandler) {
@@ -465,6 +584,7 @@ function renderBarchart(data) {
   }
 
   _keydownHandler = (event) => {
+    if (dragState) return;
     const scrollStep = 80;
 
     if (event.ctrlKey || event.metaKey) {
@@ -517,6 +637,41 @@ function renderBarchart(data) {
   };
 
   document.addEventListener('keydown', _keydownHandler);
+
+  // --- 기번 재배정 드래그 (window 레벨 mousemove/mouseup) ---
+  if (_dragMoveHandler) window.removeEventListener('mousemove', _dragMoveHandler);
+  if (_dragUpHandler) window.removeEventListener('mouseup', _dragUpHandler);
+
+  _dragMoveHandler = (event) => {
+    if (!dragState) return;
+    dragState.lastClientY = event.clientY;
+    if (!dragState.moved && Math.abs(event.clientY - dragState.startClientY) > 4) {
+      dragState.moved = true;
+      document.body.classList.add('dragging-acno');
+    }
+    if (dragState.moved) updateGhost();
+  };
+
+  _dragUpHandler = () => {
+    if (!dragState) return;
+    stopAutoScroll();
+    const { moved, targetRowIdx, sourceRowIdx, fl } = dragState;
+    dragLayer.selectAll('*').remove();
+    document.body.classList.remove('dragging-acno');
+    dragState = null;
+    if (!moved) return;
+    if (targetRowIdx === null || targetRowIdx === sourceRowIdx) return;
+    const targetAcno = acnoList[targetRowIdx];
+    if (!targetAcno) return;
+    reassignAcno(fl.row_id, targetAcno);
+  };
+
+  window.addEventListener('mousemove', _dragMoveHandler);
+  window.addEventListener('mouseup', _dragUpHandler);
+}
+
+function getCurrentBarchartData() {
+  return _currentData;
 }
 
 function formatKST(isoStr) {
@@ -525,6 +680,159 @@ function formatKST(isoStr) {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${d.getMonth()+1}/${d.getDate()} ${hh}:${mm}`;
+}
+
+// 바차트 SVG를 전체 범위(줌/스크롤 리셋) 상태로 JPEG 이미지로 저장한다.
+// settle 콜백은 성공/실패/조기종료 모든 경로에서 정확히 한 번 호출된다(버튼 상태 복원용).
+function exportBarchartAsJpeg(settle) {
+  const done = typeof settle === 'function' ? settle : () => {};
+
+  if (!_currentData || !_currentData.aircraft || !_currentData.aircraft.length) {
+    if (typeof showError === 'function') showError('표출할 기재가 없습니다');
+    done();
+    return;
+  }
+
+  const origXZoom = _xZoom, origYZoom = _yZoom, origScrollY = _scrollY, origXOffset = _xOffset;
+  const svgNode = document.getElementById('barchart-svg');
+  const container = document.getElementById('barchart-container');
+  const origContainerWidth = container.style.width;
+  let svgString, width, height;
+
+  try {
+    // 세로(Y)는 항상 전체 기재 행이 스크롤 없이 다 들어가도록 yZoom=1로 고정한다(요청 사항).
+    // 가로(X)는 사용자가 Ctrl+방향키/휠로 맞춰둔 배율(xZoom)의 막대 폭(픽셀 밀도)을 그대로
+    // 유지하되, 가로 스크롤 없이 전체 시간축이 다 보이도록 컨테이너 폭 자체를 그 배율만큼
+    // 넓힌다 — 그래야 편명이 잘리지 않으면서도 전체 범위를 담을 수 있다.
+    const baseChartW = Math.max(container.clientWidth, 1400);
+    const baseTotalXWidth = baseChartW - MARGIN.left - MARGIN.right;
+    const exportContainerWidth = baseTotalXWidth * origXZoom + MARGIN.left + MARGIN.right;
+    container.style.width = `${exportContainerWidth}px`;
+
+    _xZoom = 1; _yZoom = 1; _scrollY = 0; _xOffset = 0;
+    renderBarchart(_currentData);
+
+    width = parseFloat(svgNode.getAttribute('width'));
+    height = parseFloat(svgNode.getAttribute('height'));
+
+    const clonedSvg = svgNode.cloneNode(true);
+    clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+    // 외부 stylesheet(style.css) 클래스에만 의존하는 스타일은 canvas 래스터화 시 적용되지 않으므로
+    // 실제 화면(reset 렌더링 직후)의 계산된 값을 샘플링해 <style>로 주입한다.
+    const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    styleEl.textContent = buildExportStyleText(svgNode);
+    const defs = clonedSvg.querySelector('defs');
+    defs.appendChild(styleEl);
+
+    // 배경색(현재 화면과 동일) — JPEG는 투명을 지원하지 않으므로 명시적 rect로 채운다.
+    const bgColor = getComputedStyle(document.getElementById('barchart-area')).backgroundColor || '#f8fafc';
+    const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bgRect.setAttribute('x', '0');
+    bgRect.setAttribute('y', '0');
+    bgRect.setAttribute('width', String(width));
+    bgRect.setAttribute('height', String(height));
+    bgRect.setAttribute('fill', bgColor);
+    clonedSvg.insertBefore(bgRect, clonedSvg.firstChild);
+
+    svgString = new XMLSerializer().serializeToString(clonedSvg);
+  } finally {
+    // renderBarchart() 재호출 사이에 await/setTimeout이 없어 브라우저가 리셋된 중간 상태를
+    // 화면에 페인트할 기회가 없으므로, 원래 줌/스크롤/컨테이너 폭으로 복원해도 시각적
+    // flash가 발생하지 않는다.
+    container.style.width = origContainerWidth;
+    _xZoom = origXZoom; _yZoom = origYZoom; _scrollY = origScrollY; _xOffset = origXOffset;
+    renderBarchart(_currentData);
+  }
+
+  downloadSvgAsJpeg(svgString, width, height, done);
+}
+
+// 인라인 attr로 지정되지 않고 style.css 클래스 규칙에만 의존하는 스타일 목록.
+// 각 selector에 해당하는 요소가 현재 데이터에 없으면(예: 연결 오류 없음) fallback 값을 사용한다.
+function buildExportStyleText(liveSvg) {
+  const rules = [
+    { selector: '.bar-navy', props: { fill: '#003580' } },
+    { selector: '.bar-cobalt', props: { fill: '#1a56c4' } },
+    { selector: '.bar-gray', props: { fill: '#4a4a52' } },
+    { selector: '.bar-error', props: { stroke: '#ef4444', 'stroke-width': '2.5px' } },
+    { selector: '.bar-text', props: { fill: '#ffffff', 'font-size': '11px', 'font-weight': '600', 'text-anchor': 'middle', 'dominant-baseline': 'middle' } },
+    { selector: '.airport-label', props: { fill: '#374151', 'font-size': '10px' } },
+    { selector: '.gt-label', props: { 'font-size': '10px', 'text-anchor': 'middle' } },
+    { selector: '.x-axis text', props: { fill: '#6b7280', 'font-size': '10px' } },
+  ];
+
+  let css = `text { font-family: ${getComputedStyle(document.body).fontFamily || "'Segoe UI', sans-serif"}; }\n`;
+  for (const rule of rules) {
+    const el = liveSvg.querySelector(rule.selector);
+    const decls = [];
+    for (const prop of Object.keys(rule.props)) {
+      let value = rule.props[prop];
+      if (el) {
+        const computed = getComputedStyle(el).getPropertyValue(prop);
+        if (computed) value = computed;
+      }
+      decls.push(`${prop}:${value}`);
+    }
+    css += `${rule.selector} { ${decls.join(';')} }\n`;
+  }
+  return css;
+}
+
+// SVG 문자열을 고해상도 캔버스에 그려 JPEG로 다운로드한다.
+function downloadSvgAsJpeg(svgString, width, height, done) {
+  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+  const img = new Image();
+
+  img.onload = () => {
+    URL.revokeObjectURL(svgUrl);
+
+    // 세로로 긴 대량 기재 데이터(예: 수백 대)에서도 가로/세로 배율이 항상 동일하게 유지되도록
+    // (한쪽만 클램프되면 이미지가 찌그러짐) 두 축과 총 픽셀수 제약을 모두 만족할 때까지 균일하게 줄인다.
+    let scale = EXPORT_SCALE;
+    while (scale > 0.1 && (
+      width * scale > EXPORT_MAX_CANVAS_DIM ||
+      height * scale > EXPORT_MAX_CANVAS_DIM ||
+      width * height * scale * scale > EXPORT_MAX_CANVAS_PIXELS
+    )) {
+      scale -= 0.1;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(canvas.width / width, canvas.height / height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    canvas.toBlob((blob) => {
+      if (!blob) { done(); return; }
+      const jpegUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+        + `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+      const startVal = (document.getElementById('start-date-input') || {}).value || '';
+      const endVal = (document.getElementById('end-date-input') || {}).value || '';
+      a.href = jpegUrl;
+      a.download = `바차트_${startVal}_${endVal}_${stamp}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(jpegUrl);
+      done();
+    }, 'image/jpeg', 0.92);
+  };
+
+  img.onerror = () => {
+    URL.revokeObjectURL(svgUrl);
+    if (typeof showError === 'function') showError('이미지 생성에 실패했습니다');
+    done();
+  };
+
+  img.src = svgUrl;
 }
 
 function positionTooltip(event, tooltip) {

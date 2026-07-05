@@ -6,6 +6,7 @@ data/*.xlsx
 *.egg-info/
 dist/
 build/
+/deploy/
 .venv/
 venv/
 node_modules/

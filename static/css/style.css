@@ -115,6 +115,14 @@ body {
   overflow: hidden;
 }
 
+#main-content.summary-collapsed {
+  grid-template-columns: 0 1fr;
+}
+
+#main-content.summary-collapsed #summary-panel {
+  display: none;
+}
+
 /* ===== 좌측 요약 패널 ===== */
 #summary-panel {
   background: #fff;
@@ -295,6 +303,7 @@ body {
 
 /* ===== 바차트 영역 ===== */
 #barchart-area {
+  grid-column: 2;
   position: relative;
   overflow: hidden;
   background: #f8fafc;
@@ -315,6 +324,38 @@ body {
 .bar-cobalt { fill: #1a56c4; }   /* 국내선 - 일반 (코발트 블루) */
 .bar-gray   { fill: #4a4a52; }   /* 국제선 (진한 회색) */
 .bar-error  { stroke: #ef4444; stroke-width: 2.5px; }
+
+/* ===== 기번 재배정 드래그 ===== */
+.bar-drag-ghost {
+  fill: #f59e0b;
+  fill-opacity: 0.55;
+  stroke: #f59e0b;
+  stroke-width: 2px;
+  stroke-dasharray: 4,2;
+  pointer-events: none;
+}
+
+.bar-drag-ghost-text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+.row-drop-highlight {
+  fill: #f59e0b;
+  fill-opacity: 0.15;
+  stroke: #f59e0b;
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+
+body.dragging-acno {
+  cursor: grabbing !important;
+  user-select: none;
+}
 
 .bar-text {
   fill: #fff;

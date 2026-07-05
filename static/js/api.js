@@ -52,3 +52,16 @@ async function fetchSummaryData(natList, airline) {
   if (!res.ok) throw new Error('요약 데이터 로드 실패');
   return res.json();
 }
+
+async function updateAcno(rowId, newAcno) {
+  const res = await fetch('/api/update-acno', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ row_id: rowId, new_acno: newAcno }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '기번 변경 실패');
+  }
+  return res.json();
+}

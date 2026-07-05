@@ -13,6 +13,9 @@ DOMESTIC_AIRLINES = {
 
 CARGO_NAT = {'CGE', 'CGO', 'CGC'}
 
+# 대한항공(KAL) ICN 국제선 연결용 지선(피더) 공항 — 현재 KAL만 해당 확인됨, 향후 타사/타 공항 확인 시 확장
+KAL_FEEDER_AIRPORTS = {'PUS', 'TAE'}
+
 # #10 Actype 등급
 ACTYPE_GRADE = {}
 _grade_map = {
@@ -109,7 +112,7 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, nat_list: list) -> dict:
     result = []
 
     for acno, group in filtered.groupby('Acno'):
-        group = group.sort_values('STD_KST').reset_index(drop=True)
+        group = group.sort_values('STD_KST').reset_index().rename(columns={'index': 'row_id'})
         flights = []
         connection_error_acno = False
 
@@ -149,6 +152,7 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, nat_list: list) -> dict:
             domestic_intl = str(row.get('Domestic_Intl', ''))
 
             flights.append({
+                'row_id': int(row['row_id']),
                 'fltno': str(row.get('Fltno', '')),
                 'depstn': dep,
                 'arrstn': arr,
@@ -243,6 +247,14 @@ def _aircraft_type_acno_sets(df: pd.DataFrame) -> dict:
     """Acno별 인천기재/국내기재 판정 (filters.js의 filterAircraftByType과 동일 규칙)
 
     해당 Acno가 가진 항공편 중 하나라도 조건에 맞으면 그 기재 유형에 포함시킨다.
+
+    예외 1: KAL 지선편(PUS/TAE↔ICN, NAT=PAX) 이후 해당 Acno의 나머지 모든 편이
+    국제선이면(ICN 경유 여부 무관 — PUS/TAE발 국제선도 포함), 그 지선편은 국내기재
+    판정에서 제외한다 (인천기재 판정에는 영향 없음).
+
+    예외 2: 그날 ICN을 전혀 경유하지 않는 Acno가 국내 비-ICN 공항(GMP/PUS 등)을
+    기점/종점으로 국제선을 운항하면(예: GMP-KIX, PUS-PVG), 그 Acno는 국내기재로
+    분류한다 — ICN 기반이 아니라 지방공항을 거점으로 하는 기재이기 때문.
     """
     if df.empty or 'Acno' not in df.columns:
         return {'icn': set(), 'domestic': set()}
@@ -256,6 +268,42 @@ def _aircraft_type_acno_sets(df: pd.DataFrame) -> dict:
     arr_kr = arr.isin(KOREAN_AIRPORTS)
     icn_only = (dep == 'ICN') & (arr == 'ICN')
     domestic_mask = dep_kr & arr_kr & ~icn_only
+
+    # 예외 2: ICN 미경유 + 국내 비-ICN 공항 기점 국제선(지방공항 기반 기재)
+    icn_acnos = set(df.loc[icn_mask, 'Acno'].unique())
+    no_icn_acno = ~df['Acno'].isin(icn_acnos)
+    dep_kr_nonicn = dep_kr & (dep != 'ICN')
+    arr_kr_nonicn = arr_kr & (arr != 'ICN')
+    kr_based_intl_mask = ((dep_kr_nonicn & ~arr_kr) | (arr_kr_nonicn & ~dep_kr)) & no_icn_acno
+    domestic_mask = domestic_mask | kr_based_intl_mask
+
+    if 'Airline_Code' in df.columns:
+        airline = df['Airline_Code'].astype(str)
+        feeder_route = (
+            ((dep == 'ICN') & arr.isin(KAL_FEEDER_AIRPORTS)) |
+            ((arr == 'ICN') & dep.isin(KAL_FEEDER_AIRPORTS))
+        )
+        feeder_mask = airline.eq('KAL') & feeder_route
+        if 'NAT' in df.columns:
+            feeder_mask &= df['NAT'].astype(str).eq('PAX')
+
+        if feeder_mask.any():
+            # 국제선 여부 = classify_route와 동일 조건 (양쪽 모두 한국공항이 아니면 국제선)
+            is_intl = ~(dep_kr & arr_kr)
+
+            exempt_acnos = set()
+            for acno, idx in df.groupby('Acno').groups.items():
+                acno_feeder_idx = idx[feeder_mask.loc[idx]]
+                if len(acno_feeder_idx) == 0:
+                    continue
+                other_idx = idx.difference(acno_feeder_idx)
+                if len(other_idx) == 0:
+                    continue
+                if is_intl.loc[other_idx].all():
+                    exempt_acnos.add(acno)
+
+            if exempt_acnos:
+                domestic_mask = domestic_mask & ~(feeder_mask & df['Acno'].isin(exempt_acnos))
 
     return {
         'icn': set(df.loc[icn_mask, 'Acno'].unique()),
