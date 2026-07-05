@@ -230,7 +230,7 @@ CNL(결항) 레코드
 3. **공항 코드**: ICAO 4자리 코드 사용 (IATA 코드 아님)
 4. **결항/우회 처리**: `Status` 컬럼에 'CNL'(결항) 또는 'DIV'(우회) 값이 있으면 이를 참고하여 후처리
 5. **Blocktime 계산**: STA_UTC - STD_UTC로 계산되며, 단위는 분(minute)
-6. **바차트 날짜 보정**: `data_processor.py`의 `process_dataframe()`에서 STD_KST 날짜가 Sch_date_KST와 다를 경우, 시간은 유지하고 날짜를 Sch_date_KST 기준으로 이동시켜 해당 편이 바차트에 표출되도록 보정
+6. **일자 mislabel 보정**: UBKAIS는 DEP/ARR 조회 모두에서 `schDate`·`staDate`를 항상 검색일(search_date)로 echo하므로, 조회 방향과 반대편 날짜 필드(ARR 조회의 `schDate`, DEP 조회의 `staDate`)는 신뢰할 수 없다. `func_ubkais.py`의 `process_flight_schedule()`은 `duration(=STA_UTC-STD_UTC) < 0`인 동안(최대 3일) 신뢰 불가능한 쪽만 하루씩 보정한다 — ARR 조회는 `schTime_UTC`(STD)·`atd_UTC`를 차감, DEP 조회는 `sta_UTC`(STA)·`ata_UTC`를 가산. 이렇게 계산된 STD_UTC/STA_UTC/Blocktime은 이후 어떤 단계에서도 재보정되지 않고 그대로 바차트에 사용된다 (`Sch_date_KST`로 강제 정렬하지 않음 — 검색일 전날로 넘어가는 야간편은 실제 시각대로 바차트에 표출됨).
 
 ---
 

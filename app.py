@@ -222,7 +222,7 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    from data_processor import filter_for_barchart, compute_summary, CARGO_NAT
+    from data_processor import filter_for_barchart, compute_summary, CARGO_NAT, add_aircraft_type_columns
 
     nat_list = [n.strip() for n in nat.split(",") if n.strip()] if nat else []
 
@@ -274,7 +274,7 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
     barchart_df = pd.DataFrame(bar_rows) if bar_rows else pd.DataFrame()
 
     # Sheet 3: RAW
-    raw_df = _current_df.copy()
+    raw_df = add_aircraft_type_columns(_current_df)
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:

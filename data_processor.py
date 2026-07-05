@@ -65,22 +65,6 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[kst_col] = pd.NaT
 
-    # Sch_date_KST 기준으로 STD_KST/STA_KST 날짜 보정
-    # STD_KST 날짜가 Sch_date_KST와 다르면 시간은 유지하고 날짜를 Sch_date_KST로 맞춤
-    if 'Sch_date_KST' in df.columns and pd.notna(df['STD_KST']).any():
-        sch_date = pd.to_datetime(df['Sch_date_KST'])
-        std_kst = df['STD_KST']
-        sta_kst = df['STA_KST']
-
-        # STD_KST 날짜와 Sch_date_KST 날짜 차이 (일 단위)
-        std_date_diff = (std_kst.dt.normalize() - sch_date.dt.normalize()).dt.days
-        needs_fix = std_date_diff.notna() & (std_date_diff != 0)
-
-        if needs_fix.any():
-            shift = pd.to_timedelta(std_date_diff[needs_fix], unit='D')
-            df.loc[needs_fix, 'STD_KST'] = std_kst[needs_fix] - shift
-            df.loc[needs_fix, 'STA_KST'] = sta_kst[needs_fix] - shift
-
     # Domestic_Intl
     def classify_route(row):
         dep = row.get('Depstn', '')
@@ -287,6 +271,39 @@ def _op_rows_by_aircraft_type(df_subset: pd.DataFrame) -> dict:
         'icn': _compute_op_rows(df_subset[df_subset['Acno'].isin(acno_sets['icn'])]),
         'domestic': _compute_op_rows(df_subset[df_subset['Acno'].isin(acno_sets['domestic'])]),
     }
+
+
+def add_aircraft_type_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """RAW 시트용: 일자별 Acno 기준 인천기재/국내기재 여부('O') 컬럼 추가
+
+    유효편(Status!=CNL, Bt_idx==Y) 기준으로 해당 일자(Sch_date_KST)·Acno가
+    인천기재/국내기재로 분류되면 원본 df의 모든 행(무효편 포함)에 'O' 표시.
+    """
+    result = df.copy()
+    result['인천기재'] = ''
+    result['국내기재'] = ''
+
+    if df.empty or 'Sch_date_KST' not in df.columns or 'Acno' not in df.columns:
+        return result
+
+    valid = df[(df['Status'] != 'CNL') & (df['Bt_idx'] == 'Y')].dropna(subset=['Acno'])
+    if valid.empty:
+        return result
+
+    valid_dates = pd.to_datetime(valid['Sch_date_KST']).dt.date
+    row_dates = pd.to_datetime(df['Sch_date_KST']).dt.date
+
+    icn_pairs, domestic_pairs = set(), set()
+    for date_val, day_group in valid.groupby(valid_dates):
+        acno_sets = _aircraft_type_acno_sets(day_group)
+        icn_pairs.update((date_val, acno) for acno in acno_sets['icn'])
+        domestic_pairs.update((date_val, acno) for acno in acno_sets['domestic'])
+
+    row_pairs = list(zip(row_dates, df['Acno']))
+    result['인천기재'] = ['O' if p in icn_pairs else '' for p in row_pairs]
+    result['국내기재'] = ['O' if p in domestic_pairs else '' for p in row_pairs]
+
+    return result
 
 
 def compute_summary(df: pd.DataFrame, nat_list: list, airline: str = '') -> dict:

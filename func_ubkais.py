@@ -211,8 +211,32 @@ def process_flight_schedule(start_date, end_date, icao_airline, icao_codes, file
     for col in utc_cols:
         final_df[col] = final_df[col].dt.tz_localize(None)
 
+    # 일자 보정: duration(=sta_UTC - schTime_UTC)이 음수인 경우, 조회 방향(Sort)에 따라
+    # 신뢰 가능한 날짜(검색일에 anchor된 쪽)는 그대로 두고 반대쪽 날짜만 보정한다.
+    # - ARR 조회: staDate가 검색일에 anchor됨 -> schDate(STD) 쪽이 부정확할 수 있으므로 하루씩 차감
+    # - DEP 조회: schDate가 검색일에 anchor됨 -> staDate(STA) 쪽이 부정확할 수 있으므로 하루씩 가산
+    # 장거리·시차가 큰 노선은 최대 2일까지 어긋나는 사례가 확인되어 반복 보정한다(cap=3).
+    MAX_DATE_SHIFT_DAYS = 3
     duration = final_df['sta_UTC'] - final_df['schTime_UTC']
-    final_df.loc[duration < pd.Timedelta(0), 'sta_UTC'] += pd.Timedelta(days=1)
+    for _ in range(MAX_DATE_SHIFT_DAYS):
+        still_negative = duration < pd.Timedelta(0)
+        if not still_negative.any():
+            break
+        is_arr = still_negative & (final_df['Sort'] == 'ARR')
+        is_dep = still_negative & (final_df['Sort'] == 'DEP')
+
+        final_df.loc[is_arr, 'schTime_UTC'] -= pd.Timedelta(days=1)
+        final_df.loc[is_arr & final_df['atd_UTC'].notna(), 'atd_UTC'] -= pd.Timedelta(days=1)
+
+        final_df.loc[is_dep, 'sta_UTC'] += pd.Timedelta(days=1)
+        final_df.loc[is_dep & final_df['ata_UTC'].notna(), 'ata_UTC'] += pd.Timedelta(days=1)
+
+        duration = final_df['sta_UTC'] - final_df['schTime_UTC']
+
+    remaining_negative = duration < pd.Timedelta(0)
+    if remaining_negative.any():
+        logger.info(f"Blocktime negative after date correction: {int(remaining_negative.sum())} rows remain negative (exceeds {MAX_DATE_SHIFT_DAYS}-day shift cap)")
+
     final_df['Blocktime'] = (final_df['sta_UTC'] - final_df['schTime_UTC']).dt.total_seconds() / 60
     final_df['Blocktime'] = final_df['Blocktime'].fillna(0).astype(int)
 
