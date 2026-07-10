@@ -20,7 +20,9 @@
 
 ## 2. 항공기별 편 연결 규칙
 
-- 같은 기번(`Acno`)에 속한 항공편을 **`STD_KST` 오름차순**으로 정렬하여 순서대로 연결
+- 같은 기번(`Acno`)에 속한 항공편을 **`RO_KST`(실적 Out) 오름차순**으로 정렬하여 순서대로 연결
+  (`RO_KST`가 결측인 편은 순서 결정에 한해 `STD_KST`로 보완 — 그려지는 시각/BT/GT 값 자체는 여전히
+  RO/RI 기준)
 - 연결된 편들은 바차트에서 시간 흐름에 따라 이어서 표출
 
 ### 연결 무결성 검증
@@ -43,7 +45,21 @@
 ### 바차트 형태
 
 - 직사각형 형태
-- BAR 구간: `STD_KST` ~ `STA_KST`
+- BAR 구간: `RO_KST`(실적 출발) ~ `RI_KST`(실적 도착) — 계획(`STD_KST`/`STA_KST`)이 아닌 실적 기준
+- `RO_KST` 또는 `RI_KST`가 결측인 편은 STD/STA로 폴백하지 않고 바를 그리지 않으며, 바차트 상단에
+  결측 경고 배너로 어떤 편(`Fltno`/`Acno`)의 무엇이 없는지 표출한다 (좌측 요약 영역의 가동률/GT
+  히스토그램/GT 테이블/노선별 BT 통계는 여전히 `STD_KST`/`STA_KST`/`Blocktime` 계획 기준을 사용한다)
+
+### 3-1. 지연 BAR (STD~RO)
+
+- **조건**: `RO_KST > STD_KST` (실적 출발이 계획 출발보다 늦은 경우)만 표출
+- **구간**: `STD_KST` ~ `RO_KST`
+- **색상**: 붉은색 (`.bar-delay`, `#dc2626`), 메인 BAR(`RO_KST`~`RI_KST`) 왼쪽에 이어붙여 표출
+- `RO_KST <= STD_KST`(정시 또는 조기출발)면 지연 BAR를 표출하지 않고, 기존과 동일하게
+  `RO_KST`~`RI_KST` 메인 BAR만 표출
+- 지연 BAR에는 편명/공항 라벨을 표시하지 않음(메인 BAR 라벨과 중복 방지)
+- 구현 위치: `static/js/barchart.js`의 BAR 렌더링 루프(메인 BAR 직전), `fl.std_kst` 필드 사용
+  (`data_processor.py::filter_for_barchart()`에서 `STD_KST` 컬럼을 isoformat 변환해 전달)
 
 ### 바차트 내부 표출 정보
 
@@ -71,15 +87,30 @@ ICN                                 GMP
 
 ---
 
+## 4-1. STA(도착 예정시각) 마커
+
+- 각 편의 BAR 내부(또는 조기도착 시 BAR 바깥)에 계획 도착시각(`STA_UTC`→KST 변환,
+  `STA_KST`)을 **노란색 세로선**으로 표시
+- 세로선 상단에 **노란색 정삼각형**(꼭짓점이 아래로 향해 선의 상단과 맞닿는 형태, 밑변이
+  위) 표시
+- 세로선 세로 범위: 해당 편 BAR의 높이(상단~하단)만큼만 — 다른 행(기번)과 겹치지 않음
+- 삼각형 크기: BAR 높이(`scaledBarH`)에 비례 — Y축 확대/축소 시 함께 커지고 작아짐
+- **조기도착**(실적 `RI_KST`가 계획 `STA_KST`보다 이른 경우) 시 마커가 BAR 오른쪽 바깥에
+  위치할 수 있음 — 정상 동작이며 클리핑하지 않음(차트 전체 가로 영역 내에서는 항상 표시)
+- 구현 위치: `static/js/barchart.js`의 BAR 렌더링 루프, `fl.sta_kst` 필드 사용
+  (`data_processor.py::filter_for_barchart()`에서 `STA_KST` 컬럼을 isoformat 변환해 전달)
+
+---
+
 ## 5. 바차트 사이 GROUND TIME 표시
 
 - 연결된 두 바차트 사이의 **정 가운데**에 GROUND TIME을 텍스트로 표시
-- GROUND TIME = 다음 편 `STD_KST` - 이전 편 `STA_KST`
+- GROUND TIME = 다음 편 `RO_KST` - 이전 편 `RI_KST`
 
 ```
 예시:
 │ KE123 ICN→GMP │  45분  │ KE456 GMP→PUS │
-         STA_KST        STD_KST
+         RI_KST         RO_KST
 ```
 
 > **참고**: "GT:" 접두어 없이 숫자+분만 표시
@@ -92,6 +123,33 @@ ICN                                 GMP
 - 짝수행: transparent (투명)
 - 홀수행: #d9d9d9 (연한 회색)
 - **Y축 라벨 영역에도 동일한 교대 배경색 적용** (차트 영역과 일관성 유지)
+
+---
+
+## 5-1-1. 같은 기번 내 겹치는 편 lane 분리
+
+### 배경
+
+`RAMP RETURN`(지상 복귀) 등으로 같은 편명이 두 행으로 기록되는 경우가 있다(예: 2026-03-12
+`HL8322` `7C6122` — 1행: KHH→KHH, RO 15:09~RI 15:40 / 2행: KHH→GMP, STD 15:15,
+RO 16:53~RI 20:02). 2행의 **지연 BAR**(STD~RO 구간, 15:15~16:53)가 1행의 메인 BAR와
+시간상 겹쳐, 같은 Acno 행 안에서 두 BAR가 겹쳐 그려지는 문제가 있었다.
+
+### 규칙
+
+`_sort_key`(RO_KST, 결측 시 STD_KST) 순서상 **바로 인접한 두 편만** 비교한다: 다음 편의
+`STD_KST`가 이전 편의 `RI_KST`와 같거나 더 이르면(`다음 편 STD_KST <= 이전 편 RI_KST`)
+겹침으로 판정하고, 그 Acno 행 안에서 두 편을 위/아래 lane(0/1 토글)으로 나눠 배치한다.
+겹치지 않으면 lane 0으로 리셋해 기존과 동일하게 한 줄에 이어붙인다.
+
+- 각 편의 **BAR 두께는 그대로 유지**하고, 겹침이 있는 Acno만 행 전체 높이가
+  `lane_count`배로 늘어난다(다른 Acno 행 높이·교대 배경·Y축 번호는 영향 없음).
+- lane은 순수 렌더링 배치용 정보로, 기존 렌더링 순서·GT(`ground_time_before`) 계산·
+  `connection_error`(이전 편 Arrstn vs 다음 편 Depstn) 판정에는 영향을 주지 않는다.
+- 구현 위치: `data_processor.py::_assign_overlap_lanes()`(lane/lane_count 산출),
+  `static/js/barchart.js`의 `redrawAll()`(행별 높이 누적합 `rowOffsets`/`rowHeights`
+  기반으로 Y좌표 계산 — 행 배경, Y축 라벨, BAR, 스크롤 총 높이, 드래그 재배정 좌표→행
+  인덱스 역산이 모두 이 배열을 참조하도록 통일됨)
 
 ---
 
@@ -110,8 +168,8 @@ ICN                                 GMP
 | Ctrl+휠 / 핀치 | X, Y 동시 줌 |
 
 ### X축 범위 제한
-- X축 범위는 검색 조건(시작일/종료일)이 아니라 **실제로 표출되는 항공편의 STD_KST/STA_KST 최소~최대값**으로 결정됨 (`static/js/barchart.js`에서 데이터 기반으로 산출)
-- 단일일 검색이라도 ARR 도착편의 실제 출발(STD)이 검색일 전날 저녁인 야간편(예: 장거리 국제선)은 그 전날 저녁부터 바가 시작되도록 X축이 자연 확장됨 — 검색일 00:00~24:00로 강제로 압축하지 않음
+- X축 범위는 검색 조건(시작일/종료일)이 아니라 **실제로 표출되는 항공편의 RO_KST/RI_KST 최소~최대값**으로 결정됨 (`static/js/barchart.js`에서 데이터 기반으로 산출)
+- 단일일 검색이라도 야간편(예: 장거리 국제선)의 실제 출발(RO)이 검색일 전날 저녁이면 그 전날 저녁부터 바가 시작되도록 X축이 자연 확장됨 — 검색일 00:00~24:00로 강제로 압축하지 않음
 - 다일 시 각 날짜의 00:00 위치에 "M/D" 형식 날짜 라벨 표시
 - 날짜 경계선은 파란색 점선으로 표시
 
@@ -140,14 +198,21 @@ ICN                                 GMP
 | 기번 | `Acno` |
 | 출발공항 | `Depstn` |
 | 도착공항 | `Arrstn` |
-| 출발 예정시각 | `STD_KST` |
-| 도착 예정시각 | `STA_KST` |
-| 블록타임 | `Blocktime` (분) |
-| 그라운드타임 | 이전 편 `STA_KST` - 해당 편 `STD_KST` (분) |
+| 실적 출발시각(RO) | `RO_KST` |
+| 실적 도착시각(RI) | `RI_KST` |
+| 블록타임 | `RI_KST` - `RO_KST` (분, 계획 `Blocktime`과 별개) |
+| 그라운드타임 | 이전 편 `RI_KST` - 해당 편 `RO_KST` (분) |
+| 결항지연 / 출발지연 / 관제지연 | `CNX_DLA` / `DEP_DLA` / `ATC_DLA` (분, 값 없으면 `-`) |
+| 지연(RO-STD) | `RO_KST` - `STD_KST` (분, `RO_KST > STD_KST`일 때만 계산, 아니면 `-`) — 지연 BAR와 동일 조건, 프론트(`static/js/barchart.js`)에서 계산 |
+| NAT | 자유 텍스트, 엑셀 업로드 필수 입력 컬럼(값 없으면 `-`) — 필터/집계 미사용, 툴팁 표시 전용 |
+| MTTT | 정수, 엑셀 업로드 필수 입력 컬럼(값 없으면 `-`) — 필터/집계 미사용, 툴팁 표시 전용 |
 
 > **GROUND TIME 계산 방향**:
-> - 해당 편 기준으로 **앞에 연결된 도착편의 `STA_KST`** - **해당 편의 `STD_KST`**
+> - 해당 편 기준으로 **앞에 연결된 도착편의 `RI_KST`** - **해당 편의 `RO_KST`**
 > - 첫 번째 편(앞에 연결된 편 없음)은 GROUND TIME 미표시
+
+> **D_OPER 컬럼**: 엑셀 업로드 필수 컬럼(값은 `Y` 또는 빈칸만 허용)으로 받되, 바차트
+> 표출(BAR/툴팁 등)에는 사용하지 않는다 — 업로드 데이터 보관 전용.
 
 ---
 
@@ -156,16 +221,20 @@ ICN                                 GMP
 ```
 [데이터 필터] Status != CNL  AND  Bt_idx == Y
       ↓
-[정렬] 기번(Acno) 별로 STD_KST 오름차순
+[정렬] 기번(Acno) 별로 RO_KST 오름차순 (결측 시 STD_KST로 순서만 보완)
       ↓
 [연결 검증] 이전 Arrstn == 다음 Depstn
            → 불일치 시 빨간 테두리
       ↓
 [배경색] GMP 포함 시 파란색 / 그 외 주황색
       ↓
-[BAR 표출] 출발공항 | 편명 | 도착공항
+[BAR 표출] 출발공항 | 편명 | 도착공항  (구간: RO_KST ~ RI_KST, 결측 시 미표시 + 경고 배너)
       ↓
-[사이 텍스트] GROUND TIME (분)
+[사이 텍스트] GROUND TIME (분, RI_KST~RO_KST 기준)
       ↓
-[마우스 오버] 편명, 기번, 출도착공항, STD/STA_KST, BT, GT
+[마우스 오버] 편명, 기번, 출도착공항, RO/RI_KST, BT, GT, 지연 3종(CNX/DEP/ATC),
+             지연(RO-STD), NAT, MTTT
 ```
+
+> **요약 영역과의 관계**: 좌측 요약 패널(가동률 "계획BT", GT 히스토그램, GT 테이블, 노선별 BT 통계)은
+> 이 문서의 RO/RI 전환과 무관하게 `STD_KST`/`STA_KST`/`Blocktime`(계획) 기준을 그대로 사용한다.

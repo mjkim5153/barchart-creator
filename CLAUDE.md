@@ -38,22 +38,28 @@
 - 진행 상황에 대한 명확한 업데이트
 - 필요시 의사결정을 위해 사용자에게 질문
 
-## 정적 파일(JS/CSS) 캐싱 정책 — 중요
+## 정적 파일(JS/CSS) 및 index.html 캐싱 정책 — 중요
 
 **배경**: `/api/summary`의 `operation_summary.rows` 응답 구조를 배열(`[...]`)에서
 객체(`{all, icn, domestic}`)로 변경했을 때, 브라우저(Chrome)가 리팩토링 이전의
 구버전 `summary.js`를 캐시하고 있어 `rows.length`가 `undefined`가 되고
 `!rows.length`가 항상 `true`로 평가되면서 데이터가 있어도 "데이터 없음"으로
-잘못 표출되는 버그가 발생했다.
+잘못 표출되는 버그가 발생했다. 이후 NAT→TOF 컬럼 리네임 작업 중에도 동일한
+패턴의 버그가 재현되었다: `index.html`의 필터 컨테이너 id를 `nat-container`→
+`tof-container`로 바꿨는데, 루트(`/`) 응답에는 `Cache-Control`이 적용되어 있지
+않아 캐시된 구버전 `index.html`(`nat-container`)과 신버전 `main.js`
+(`tof-container` 참조)가 서로 어긋나 `Cannot read properties of null` 오류가
+발생했다.
 
 **원인**: `app.mount("/static", StaticFiles(...))`가 `Cache-Control` 헤더를
 설정하지 않아, 브라우저가 휴리스틱 캐싱으로 서버 재검증 없이 구버전
-정적 파일을 계속 사용함.
+정적 파일을 계속 사용함. `index.html`을 서빙하는 루트(`/`) 응답도 애초에
+이 정책에서 빠져 있었음.
 
-**적용된 조치**: `app.py`에 미들웨어를 추가해 `/static/` 응답에
-`Cache-Control: no-cache, must-revalidate`를 강제 적용 (백엔드/프론트
-응답 구조가 바뀌어도 브라우저가 항상 서버에 재검증하도록 함). 이 헤더를
-제거하거나 우회하지 말 것.
+**적용된 조치**: `app.py`에 미들웨어를 추가해 `/static/` 응답과 루트(`/`)
+응답(`index.html`) 모두에 `Cache-Control: no-cache, must-revalidate`를 강제
+적용 (백엔드/프론트 응답 구조나 `index.html`의 DOM 구조가 바뀌어도 브라우저가
+항상 서버에 재검증하도록 함). 이 헤더를 제거하거나 우회하지 말 것.
 
 **디버깅 시 주의사항**:
 - 프론트엔드 버그를 재현할 때 Playwright(캐시 없는 새 컨텍스트)에서는

@@ -246,7 +246,7 @@ def process_flight_schedule(start_date, end_date, icao_airline, icao_codes, file
     rename_map = {
         'SCH DATE_KST': 'Sch_date_KST', 'Sort': 'Sort', 'fpId': 'Fltno',
         'Depstn': 'Depstn', 'Arrstn': 'Arrstn', 'acId': 'Acno',
-        'acType': 'Actype', 'Status': 'Status', 'nat': 'NAT', 'Stand': 'Stand',
+        'acType': 'Actype', 'Status': 'Status', 'nat': 'TOF', 'Stand': 'Stand',
         'schTime_UTC': 'STD_UTC', 'sta_UTC': 'STA_UTC', 'atd_UTC': 'ATD_UTC',
         'ata_UTC': 'ATA_UTC', 'Ramp_Datetime_UTC': 'Ramp_UTC', 'Blocktime': 'Blocktime'
     }

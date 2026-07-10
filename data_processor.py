@@ -11,7 +11,7 @@ DOMESTIC_AIRLINES = {
     'KAL', 'AAR', 'JJA', 'TWB', 'JNA', 'ESR', 'ABL', 'ASV', 'EOK', 'PTA', 'APZ'
 }
 
-CARGO_NAT = {'CGE', 'CGO', 'CGC'}
+CARGO_TOF = {'CGE', 'CGO', 'CGC'}
 
 # 대한항공(KAL) ICN 국제선 연결용 지선(피더) 공항 — 현재 KAL만 해당 확인됨, 향후 타사/타 공항 확인 시 확장
 KAL_FEEDER_AIRPORTS = {'PUS', 'TAE'}
@@ -46,7 +46,10 @@ def get_actype_grade(actype: str) -> str:
     return ''
 
 
-REQUIRED_COLUMNS = {'Fltno', 'Depstn', 'Arrstn', 'Acno', 'Actype', 'Status', 'Bt_idx'}
+REQUIRED_COLUMNS = {
+    'Sch_date_KST', 'Fltno', 'Depstn', 'Arrstn', 'Acno', 'Actype',
+    'TOF', 'STD_UTC', 'STA_UTC'
+}
 
 
 def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -67,6 +70,34 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             df[kst_col] = pd.to_datetime(df[utc_col]) + timedelta(hours=9)
         else:
             df[kst_col] = pd.NaT
+
+    # RO_KST, RI_KST: 실적(Actual) Out/In 시각, UTC+9 (없으면 NaT — 바차트에서 결측 경고 처리)
+    for utc_col, kst_col in [('RO_UTC', 'RO_KST'), ('RI_UTC', 'RI_KST')]:
+        if utc_col in df.columns:
+            df[kst_col] = pd.to_datetime(df[utc_col]) + timedelta(hours=9)
+        else:
+            df[kst_col] = pd.NaT
+
+    # 지연 지표(결항/출발/관제): 없으면 NaN, 있으면 숫자로 정제 (바차트 툴팁 표시용)
+    for col in ('CNX_DLA', 'DEP_DLA', 'ATC_DLA'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        else:
+            df[col] = np.nan
+
+    # Status: 없으면 전부 유효편(ACT)으로 간주 (엑셀 업로드는 유효편만 입력한다고 가정)
+    if 'Status' not in df.columns:
+        df['Status'] = 'ACT'
+
+    # Bt_idx: 없으면 전부 Y (엑셀 업로드는 편당 1행만 입력한다고 가정, DEP/ARR 중복 없음)
+    if 'Bt_idx' not in df.columns:
+        df['Bt_idx'] = 'Y'
+
+    # Blocktime: 없으면 STD_KST/STA_KST 차이(분)로 계산
+    if 'Blocktime' not in df.columns:
+        df['Blocktime'] = (
+            (df['STA_KST'] - df['STD_KST']).dt.total_seconds() / 60
+        ).round().astype(int)
 
     # Domestic_Intl
     def classify_route(row):
@@ -89,32 +120,73 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_for_barchart(df: pd.DataFrame, airline: str, nat_list: list) -> dict:
+def _filter_by_sch_date(df: pd.DataFrame, date_str: str) -> pd.DataFrame:
+    """date_str(YYYY-MM-DD)이 주어지면 Sch_date_KST가 일치하는 행만 반환"""
+    if not date_str or 'Sch_date_KST' not in df.columns:
+        return df
+    target = pd.to_datetime(date_str).date()
+    return df[pd.to_datetime(df['Sch_date_KST']).dt.date == target]
+
+
+def _assign_overlap_lanes(std_ri_pairs: list) -> tuple:
+    """같은 Acno 안에서 겹치는 편을 위/아래로 배치하기 위한 lane 배정.
+
+    std_ri_pairs: `_sort_key` 순서로 정렬된 (STD_KST, RI_KST) 튜플 리스트.
+    직전 편의 RI_KST 대비 다음 편의 STD_KST가 같거나 더 이르면(지연 BAR가 직전 편
+    쪽으로 겹쳐 그려짐) 겹침으로 보고 직전과 다른 lane(0/1 토글)을 배정한다.
+    """
+    lanes = []
+    prev_ri = None
+    cur_lane = 0
+    for std, ri in std_ri_pairs:
+        if prev_ri is not None and pd.notna(std) and std <= prev_ri:
+            cur_lane = 1 - cur_lane
+        else:
+            cur_lane = 0
+        lanes.append(cur_lane)
+        if pd.notna(ri):
+            prev_ri = ri
+    lane_count = (max(lanes) + 1) if lanes else 1
+    return lanes, lane_count
+
+
+def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str: str = '') -> dict:
     """바차트 표출용 데이터 필터링 및 JSON 변환"""
+    df = _filter_by_sch_date(df, date_str)
+
     # 기본 필터: Status != CNL, Bt_idx == Y
     filtered = df[
         (df['Status'] != 'CNL') &
         (df['Bt_idx'] == 'Y')
     ].copy()
 
-    # 여객기만: NAT not in CARGO_NAT
-    if 'NAT' in filtered.columns:
-        filtered = filtered[~filtered['NAT'].isin(CARGO_NAT)]
+    # 여객기만: TOF not in CARGO_TOF
+    if 'TOF' in filtered.columns:
+        filtered = filtered[~filtered['TOF'].isin(CARGO_TOF)]
 
     # 항공사 필터
     if airline:
         filtered = filtered[filtered['Airline_Code'] == airline]
 
-    # NAT 필터
-    if nat_list and 'NAT' in filtered.columns:
-        filtered = filtered[filtered['NAT'].isin(nat_list)]
+    # TOF 필터
+    if tof_list and 'TOF' in filtered.columns:
+        filtered = filtered[filtered['TOF'].isin(tof_list)]
 
     result = []
+    missing_ro_ri = []
 
     for acno, group in filtered.groupby('Acno'):
-        group = group.sort_values('STD_KST').reset_index().rename(columns={'index': 'row_id'})
+        # 정렬은 RO_KST(실적) 기준. RO_KST가 결측인 편은 STD_KST로 보완해 그룹 내 순서만 안정화
+        # (그려지는 시각/BT/GT 값 자체는 여전히 RO/RI를 따름 — 순서 결정 전용 보조 키)
+        group = group.copy()
+        group['_sort_key'] = group['RO_KST'].fillna(group['STD_KST'])
+        group = group.sort_values('_sort_key').reset_index().rename(columns={'index': 'row_id'})
         flights = []
         connection_error_acno = False
+
+        lanes, lane_count = _assign_overlap_lanes(
+            list(zip(group['STD_KST'], group['RI_KST']))
+        )
 
         for i, row in group.iterrows():
             # 배경색
@@ -135,112 +207,80 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, nat_list: list) -> dict:
                     connection_error = True
                     connection_error_acno = True
 
-            # Ground Time
+            ro_kst = row['RO_KST']
+            ri_kst = row['RI_KST']
+            fltno = str(row.get('Fltno', ''))
+
+            # RO/RI 결측 시 STD/STA로 폴백하지 않고 경고 목록에 수집
+            missing_parts = []
+            if pd.isna(ro_kst):
+                missing_parts.append('RO')
+            if pd.isna(ri_kst):
+                missing_parts.append('RI')
+            if missing_parts:
+                missing_ro_ri.append({
+                    'acno': str(acno),
+                    'fltno': fltno,
+                    'missing': ','.join(missing_parts),
+                })
+
+            # Ground Time: 이전편 RI_KST(실적 In) ~ 해당편 RO_KST(실적 Out)
             ground_time_before = None
             if i > group.index[0]:
                 prev_idx = group.index[group.index.get_loc(i) - 1]
-                prev_sta = group.loc[prev_idx, 'STA_KST']
-                curr_std = row['STD_KST']
-                if pd.notna(prev_sta) and pd.notna(curr_std):
-                    gt_minutes = int((curr_std - prev_sta).total_seconds() / 60)
+                prev_ri = group.loc[prev_idx, 'RI_KST']
+                if pd.notna(prev_ri) and pd.notna(ro_kst):
+                    gt_minutes = int((ro_kst - prev_ri).total_seconds() / 60)
                     ground_time_before = gt_minutes
 
-            std_kst = row['STD_KST']
-            sta_kst = row['STA_KST']
+            # 실적 블록타임: RI_KST - RO_KST (요약 영역의 계획 Blocktime과는 별개)
+            actual_blocktime = None
+            if pd.notna(ro_kst) and pd.notna(ri_kst):
+                actual_blocktime = int((ri_kst - ro_kst).total_seconds() / 60)
 
             # #7 domestic_intl 전달
             domestic_intl = str(row.get('Domestic_Intl', ''))
 
+            def _dla_value(val):
+                return int(val) if pd.notna(val) else None
+
             flights.append({
                 'row_id': int(row['row_id']),
-                'fltno': str(row.get('Fltno', '')),
+                'fltno': fltno,
                 'depstn': dep,
                 'arrstn': arr,
-                'std_kst': std_kst.isoformat() if pd.notna(std_kst) else None,
-                'sta_kst': sta_kst.isoformat() if pd.notna(sta_kst) else None,
-                'blocktime': int(row.get('Blocktime', 0)) if pd.notna(row.get('Blocktime')) else 0,
+                'ro_kst': ro_kst.isoformat() if pd.notna(ro_kst) else None,
+                'ri_kst': ri_kst.isoformat() if pd.notna(ri_kst) else None,
+                'std_kst': row['STD_KST'].isoformat() if pd.notna(row['STD_KST']) else None,
+                'sta_kst': row['STA_KST'].isoformat() if pd.notna(row['STA_KST']) else None,
+                'blocktime': actual_blocktime,
                 'actype': str(row.get('Actype', '')),
                 'actype_grade': str(row.get('Actype_Grade', '')),
                 'status': str(row.get('Status', '')),
-                'nat': str(row.get('NAT', '')),
+                'tof': str(row.get('TOF', '')),
+                'nat': (str(row.get('NAT')).strip() if pd.notna(row.get('NAT')) and str(row.get('NAT')).strip() else None),
+                'mttt': (int(row.get('MTTT')) if pd.notna(row.get('MTTT')) else None),
                 'domestic_intl': domestic_intl,
                 'color': color,
                 'connection_error': connection_error,
                 'ground_time_before': ground_time_before,
+                'cnx_dla': _dla_value(row.get('CNX_DLA')),
+                'dep_dla': _dla_value(row.get('DEP_DLA')),
+                'atc_dla': _dla_value(row.get('ATC_DLA')),
+                'lane': int(lanes[i]),
             })
 
         result.append({
             'acno': str(acno),
             'connection_error': connection_error_acno,
+            'lane_count': int(lane_count),
             'flights': flights,
         })
 
     # Acno 알파벳 순 정렬
     result.sort(key=lambda x: x['acno'])
 
-    return {'aircraft': result}
-
-
-def _compute_op_rows(df_subset: pd.DataFrame) -> list:
-    """국적사 항공사별 가동률 계산 (일별 운영기재수 합산 방식, 등급별 세부 포함)"""
-    rows = []
-    for al_code in sorted(DOMESTIC_AIRLINES):
-        al_df = df_subset[df_subset['Airline_Code'] == al_code]
-        if al_df.empty:
-            continue
-        pl_bt = int(al_df['Blocktime'].fillna(0).sum())
-
-        if 'Sch_date_KST' in al_df.columns:
-            daily_counts = al_df.groupby(
-                pd.to_datetime(al_df['Sch_date_KST']).dt.date
-            )['Acno'].nunique()
-            total_daily_aircraft = int(daily_counts.sum())
-            num_days = len(daily_counts)
-            avg_aircraft = round(total_daily_aircraft / num_days, 1) if num_days > 0 else 0.0
-        else:
-            total_daily_aircraft = al_df['Acno'].nunique()
-            avg_aircraft = float(total_daily_aircraft)
-
-        hours_per = round(pl_bt / total_daily_aircraft / 60, 1) if total_daily_aircraft > 0 else 0.0
-
-        by_grade = {}
-        for grade in ['전체', 'A', 'B', 'C', 'D', 'E']:
-            if grade == '전체':
-                g_df = al_df
-            elif 'Actype_Grade' in al_df.columns:
-                g_df = al_df[al_df['Actype_Grade'] == grade]
-            else:
-                by_grade[grade] = None
-                continue
-            if g_df.empty:
-                by_grade[grade] = None
-                continue
-            g_pl_bt = int(g_df['Blocktime'].fillna(0).sum())
-            if 'Sch_date_KST' in g_df.columns:
-                g_daily = g_df.groupby(pd.to_datetime(g_df['Sch_date_KST']).dt.date)['Acno'].nunique()
-                g_total_ac = int(g_daily.sum())
-                g_num_days = len(g_daily)
-                g_avg_ac = round(g_total_ac / g_num_days, 1) if g_num_days > 0 else 0.0
-            else:
-                g_total_ac = g_df['Acno'].nunique()
-                g_avg_ac = float(g_total_ac)
-            ratio = round(g_total_ac / total_daily_aircraft * 100, 1) if total_daily_aircraft > 0 else 0.0
-            g_hours = round(g_pl_bt / g_total_ac / 60, 1) if g_total_ac > 0 else 0.0
-            by_grade[grade] = {
-                'aircraft_count': g_avg_ac,
-                'aircraft_ratio': ratio,
-                'planned_bt': g_pl_bt,
-                'hours_per_aircraft': g_hours,
-            }
-
-        rows.append({
-            'airline': al_code,
-            'operating_aircraft': avg_aircraft,
-            'planned_bt': pl_bt,
-            'hours_per_aircraft': hours_per,
-            'by_grade': by_grade,
-        })
-    return rows
+    return {'aircraft': result, 'missing_ro_ri': missing_ro_ri}
 
 
 def _aircraft_type_acno_sets(df: pd.DataFrame) -> dict:
@@ -284,8 +324,8 @@ def _aircraft_type_acno_sets(df: pd.DataFrame) -> dict:
             ((arr == 'ICN') & dep.isin(KAL_FEEDER_AIRPORTS))
         )
         feeder_mask = airline.eq('KAL') & feeder_route
-        if 'NAT' in df.columns:
-            feeder_mask &= df['NAT'].astype(str).eq('PAX')
+        if 'TOF' in df.columns:
+            feeder_mask &= df['TOF'].astype(str).eq('PAX')
 
         if feeder_mask.any():
             # 국제선 여부 = classify_route와 동일 조건 (양쪽 모두 한국공항이 아니면 국제선)
@@ -308,16 +348,6 @@ def _aircraft_type_acno_sets(df: pd.DataFrame) -> dict:
     return {
         'icn': set(df.loc[icn_mask, 'Acno'].unique()),
         'domestic': set(df.loc[domestic_mask, 'Acno'].unique()),
-    }
-
-
-def _op_rows_by_aircraft_type(df_subset: pd.DataFrame) -> dict:
-    """전체/인천기재/국내기재 3종 가동률 rows 반환"""
-    acno_sets = _aircraft_type_acno_sets(df_subset)
-    return {
-        'all': _compute_op_rows(df_subset),
-        'icn': _compute_op_rows(df_subset[df_subset['Acno'].isin(acno_sets['icn'])]),
-        'domestic': _compute_op_rows(df_subset[df_subset['Acno'].isin(acno_sets['domestic'])]),
     }
 
 
@@ -354,231 +384,65 @@ def add_aircraft_type_columns(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def compute_summary(df: pd.DataFrame, nat_list: list, airline: str = '') -> dict:
-    """좌측 요약 패널용 집계"""
-    # 국적사만
-    domestic = df[df['Carrier_Type'] == '국적사'].copy()
+def compute_ontime_records(df: pd.DataFrame) -> dict:
+    """정시율 분석용: 편 단위 플랫 레코드 리스트 반환.
 
-    # NAT 필터
-    if nat_list and 'NAT' in domestic.columns:
-        domestic = domestic[domestic['NAT'].isin(nat_list)]
+    날짜/기재/TOF/NAT/지연기준 5종 필터는 프론트에서 이 레코드 리스트를 그대로
+    필터링·집계하는 방식으로 처리한다(조합이 많아 백엔드에서 미리 계산하지 않음).
 
-    # Bt_idx == Y, Status != CNL
-    valid = domestic[
-        (domestic['Bt_idx'] == 'Y') &
-        (domestic['Status'] != 'CNL')
-    ]
+    "운항편수" 카운트 대상(= 바차트에 실제로 그려지는 편, barchart_display_rules.md 참고):
+    - Status != 'CNL' AND Bt_idx == 'Y' (유효편)
+    - RO_KST, RI_KST 모두 존재 (하나라도 없으면 바차트에 바가 그려지지 않으므로 제외)
+    - D_OPER == 'Y' (사용자 지정: 엑셀 업로드 시 D_OPER가 'Y'인 행만 카운트)
 
-    # #9 가동률: 국적사 전체 (항공사 필터 무관)
-    # 화물기 제외
-    if 'NAT' in valid.columns:
-        all_pax = valid[~valid['NAT'].isin(CARGO_NAT)]
-    else:
-        all_pax = valid
+    지연시간(delay_min) = RO_UTC - STD_UTC (분). 기재(icn/domestic) 판정은 위 카운트
+    조건과 무관하게 그날의 전체 유효편 기준으로 계산한다(_aircraft_type_acno_sets는
+    그날 Acno의 전체 운항 패턴을 봐야 정확하므로 D_OPER로 미리 좁히지 않음).
+    """
+    if df.empty:
+        return {'records': []}
 
-    # 날짜 목록 산출
-    available_dates = []
-    if 'Sch_date_KST' in all_pax.columns:
-        available_dates = sorted(
-            pd.to_datetime(all_pax['Sch_date_KST']).dt.date.dropna().unique().tolist()
-        )
-    available_dates_str = [str(d) for d in available_dates]
+    valid = df[(df['Status'] != 'CNL') & (df['Bt_idx'] == 'Y')].copy()
+    if valid.empty or 'Sch_date_KST' not in valid.columns or 'Acno' not in valid.columns:
+        return {'records': []}
 
-    # #12 전체 기간 가동률 (기재 필터 3종: 전체/인천기재/국내기재)
-    op_rows = _op_rows_by_aircraft_type(all_pax)
+    valid_dates = pd.to_datetime(valid['Sch_date_KST']).dt.date
 
-    # 일별 가동률 (날짜 필터용, 기재 필터 3종 포함)
-    daily_op = {}
-    for date_val in available_dates:
-        day_pax = all_pax[pd.to_datetime(all_pax['Sch_date_KST']).dt.date == date_val]
-        daily_op[str(date_val)] = _op_rows_by_aircraft_type(day_pax)
+    icn_pairs, domestic_pairs = set(), set()
+    for date_val, day_group in valid.groupby(valid_dates):
+        acno_sets = _aircraft_type_acno_sets(day_group)
+        icn_pairs.update((date_val, acno) for acno in acno_sets['icn'])
+        domestic_pairs.update((date_val, acno) for acno in acno_sets['domestic'])
 
-    operation_summary = {
-        'rows': op_rows,
-        'available_dates': available_dates_str,
-        'daily': daily_op,
-    }
+    d_oper_ok = (
+        valid['D_OPER'].astype(str).str.strip() == 'Y'
+        if 'D_OPER' in valid.columns else pd.Series(False, index=valid.index)
+    )
+    ro_ok = valid['RO_KST'].notna() if 'RO_KST' in valid.columns else pd.Series(False, index=valid.index)
+    ri_ok = valid['RI_KST'].notna() if 'RI_KST' in valid.columns else pd.Series(False, index=valid.index)
+    countable = valid[d_oper_ok & ro_ok & ri_ok].copy()
 
-    # (2) Ground Time 히스토그램 (기존 유지)
-    gt_data = {}
-    for airline_code in sorted(DOMESTIC_AIRLINES):
-        al_df = valid[valid['Airline_Code'] == airline_code].copy()
-        if al_df.empty:
-            continue
+    if countable.empty:
+        return {'records': []}
 
-        gt_values = []
-        for acno, group in al_df.groupby('Acno'):
-            group = group.sort_values('STD_KST').reset_index(drop=True)
-            for i in range(1, len(group)):
-                prev_sta = group.loc[i - 1, 'STA_KST']
-                curr_std = group.loc[i, 'STD_KST']
-                if pd.notna(prev_sta) and pd.notna(curr_std):
-                    gt_min = int((curr_std - prev_sta).total_seconds() / 60)
-                    if gt_min >= 0:
-                        gt_values.append(gt_min)
+    countable_dates = valid_dates.loc[countable.index]
+    delay_min = (
+        pd.to_datetime(countable['RO_UTC']) - pd.to_datetime(countable['STD_UTC'])
+    ).dt.total_seconds() / 60
 
-        if gt_values:
-            gt_data[airline_code] = gt_values
+    records = []
+    for idx in countable.index:
+        row = countable.loc[idx]
+        date_val = countable_dates.loc[idx]
+        acno = row['Acno']
+        dm = delay_min.loc[idx]
+        records.append({
+            'date': str(date_val),
+            'tof': str(row.get('TOF', '')) if pd.notna(row.get('TOF')) else '',
+            'nat': str(row.get('NAT', '')) if pd.notna(row.get('NAT')) else '',
+            'icn': (date_val, acno) in icn_pairs,
+            'domestic': (date_val, acno) in domestic_pairs,
+            'delay_min': round(float(dm), 1) if pd.notna(dm) else None,
+        })
 
-    # (3) 노선별 BT 통계
-    route_stats = {}
-    for _, row in valid.iterrows():
-        dep = str(row.get('Depstn', ''))
-        arr = str(row.get('Arrstn', ''))
-        airline_code = str(row.get('Airline_Code', ''))
-        bt = row.get('Blocktime', 0)
-        if pd.isna(bt):
-            bt = 0
-        bt = int(bt)
-        route_key = f"{dep}-{arr}"
-        if route_key not in route_stats:
-            route_stats[route_key] = {}
-        if airline_code not in route_stats[route_key]:
-            route_stats[route_key][airline_code] = []
-        route_stats[route_key][airline_code].append(bt)
-
-    route_summary = {}
-    for route, airlines in route_stats.items():
-        route_summary[route] = {}
-        for al, bt_list in airlines.items():
-            route_summary[route][al] = {
-                'avg': round(sum(bt_list) / len(bt_list), 1),
-                'max': max(bt_list),
-                'min': min(bt_list),
-                'count': len(bt_list),
-            }
-
-    # #11 GT 테이블 데이터
-    gt_table = _compute_gt_table(valid)
-
-    # 등급 미분류 기종 정보 (국적사 여객기 중 Actype_Grade == '')
-    ungraded_actypes = []
-    if 'Actype_Grade' in valid.columns and 'NAT' in valid.columns:
-        pax_valid = valid[~valid['NAT'].isin(CARGO_NAT)]
-        ungraded = pax_valid[pax_valid['Actype_Grade'] == '']
-        if not ungraded.empty:
-            counts = ungraded.groupby('Actype').size().reset_index(name='count')
-            ungraded_actypes = counts.sort_values('count', ascending=False).to_dict('records')
-
-    return {
-        'operation_summary': operation_summary,
-        'ground_time_histogram': gt_data,
-        'route_stats': route_summary,
-        'gt_table': gt_table,
-        'ungraded_actypes': ungraded_actypes,
-    }
-
-
-def _compute_gt_table(valid: pd.DataFrame) -> dict:
-    """#11 GT 분석 테이블: 항공사별 x 등급별 GT 구간 빈도"""
-    # 국내선 구간: <30, 30, 35, 40, 45, 50, >50
-    domestic_bins = [('<30', lambda x: x < 30), ('30', lambda x: x == 30),
-                     ('35', lambda x: x == 35), ('40', lambda x: x == 40),
-                     ('45', lambda x: x == 45), ('50', lambda x: x == 50),
-                     ('>50', lambda x: x > 50)]
-    # 국제선 구간: <50, 50, 55, 60, 65, 70, >70
-    intl_bins = [('<50', lambda x: x < 50), ('50', lambda x: x == 50),
-                 ('55', lambda x: x == 55), ('60', lambda x: x == 60),
-                 ('65', lambda x: x == 65), ('70', lambda x: x == 70),
-                 ('>70', lambda x: x > 70)]
-
-    results = {'domestic': {}, 'international': {}}
-
-    for airline_code in sorted(DOMESTIC_AIRLINES):
-        al_df = valid[valid['Airline_Code'] == airline_code].copy()
-        if al_df.empty:
-            continue
-
-        # GT 값 수집 (노선유형, 등급 포함)
-        # 연결편 없는 첫 번째 편은 가장 큰 구간에 포함
-        gt_records = []
-        total_flights_by_route = {'국내선': 0, '국제선': 0}
-
-        for acno, group in al_df.groupby('Acno'):
-            group = group.sort_values('STD_KST').reset_index(drop=True)
-            for i in range(len(group)):
-                route_type = group.loc[i, 'Domestic_Intl'] if 'Domestic_Intl' in group.columns else '국제선'
-                grade = str(group.loc[i, 'Actype_Grade']) if 'Actype_Grade' in group.columns else ''
-                total_flights_by_route[route_type] = total_flights_by_route.get(route_type, 0) + 1
-
-                if i == 0:
-                    # 첫 번째 편: 연결편 없음 → 가장 큰 구간에 포함
-                    gt_records.append({
-                        'gt': None,  # None = 연결편 없음
-                        'route_type': route_type,
-                        'grade': grade,
-                    })
-                else:
-                    prev_sta = group.loc[i - 1, 'STA_KST']
-                    curr_std = group.loc[i, 'STD_KST']
-                    if pd.notna(prev_sta) and pd.notna(curr_std):
-                        gt_min = int((curr_std - prev_sta).total_seconds() / 60)
-                        # 음수 GT도 포함 (최소 구간에 자동 분류됨)
-                        gt_records.append({
-                            'gt': gt_min,
-                            'route_type': route_type,
-                            'grade': grade,
-                        })
-                    else:
-                        # 시간 데이터 누락 → GT 파악 불가, 최대 구간에 포함
-                        gt_records.append({
-                            'gt': None,
-                            'route_type': route_type,
-                            'grade': grade,
-                        })
-
-        if not gt_records:
-            continue
-
-        gt_df = pd.DataFrame(gt_records)
-
-        for route_type, bins, key in [('국내선', domestic_bins, 'domestic'), ('국제선', intl_bins, 'international')]:
-            rt_df = gt_df[gt_df['route_type'] == route_type]
-            if rt_df.empty:
-                continue
-
-            total_flight_count = total_flights_by_route.get(route_type, 0)
-            last_bin_name = bins[-1][0]  # 가장 큰 구간 이름
-
-            grades = sorted(rt_df['grade'].unique().tolist())
-            if '' in grades:
-                grades.remove('')
-                grades.append('')
-
-            grade_data = {}
-            grade_flights = {'전체': total_flight_count}
-            for grade in ['전체'] + grades:
-                if grade == '전체':
-                    gdf = rt_df
-                else:
-                    gdf = rt_df[rt_df['grade'] == grade]
-                if gdf.empty:
-                    continue
-
-                total = len(gdf)
-                if grade != '전체':
-                    grade_flights[grade] = total
-
-                # 연결편 없는 편수 (gt == None)
-                no_conn_count = int(gdf['gt'].isna().sum())
-                has_gt = gdf[gdf['gt'].notna()]
-
-                bin_counts = {}
-                for bin_name, bin_fn in bins:
-                    count = int(has_gt['gt'].apply(bin_fn).sum())
-                    # 가장 큰 구간에 연결편 없는 편 추가
-                    if bin_name == last_bin_name:
-                        count += no_conn_count
-                    pct = round(count / total * 100, 1) if total > 0 else 0.0
-                    bin_counts[bin_name] = {'count': count, 'pct': pct}
-                grade_data[grade] = bin_counts
-
-            if grade_data:
-                if airline_code not in results[key]:
-                    results[key][airline_code] = {}
-                results[key][airline_code] = {
-                    'grades': grade_data,
-                    'grade_flights': grade_flights,
-                }
-
-    return results
+    return {'records': records}

@@ -70,7 +70,7 @@ HL8571 (GMP↔HND), HL8747 (GMP↔PEK/KIX)
 ### 배경
 
 대한항공(KAL)은 ICN발 국제선 탑승객을 지방(부산 PUS, 대구 TAE)에서 인천으로 실어나르는
-여객기(NAT=PAX) 편을 운영합니다 (예: 2026-07-04 KAL1432, KAL1404 등). 방향은
+여객기(TOF=PAX) 편을 운영합니다 (예: 2026-07-04 KAL1432, KAL1404 등). 방향은
 ICN→PUS/TAE, PUS/TAE→ICN **양방향** 모두 존재합니다.
 
 이런 지선편을 운영하는 기재는, 그 지선편 한 건을 제외하면 그날 하루 종일 국제선으로만
@@ -89,7 +89,7 @@ PUS를 기점으로 하는 국제선을 직접 운항하는 사례가 다수 확
 어떤 Acno의 편이 아래 조건을 모두 만족하면, 그 편은 **국내기재 판정에서 제외**합니다
 (인천기재 판정에는 영향 없음 — 위 기본 로직에 의해 이미 인천기재로 잡힘):
 
-1. **지선편 조건**: `Airline_Code == 'KAL'` AND `NAT == 'PAX'` AND
+1. **지선편 조건**: `Airline_Code == 'KAL'` AND `TOF == 'PAX'` AND
    (`Depstn=='ICN' & Arrstn in {PUS, TAE}`) 또는 (`Arrstn=='ICN' & Depstn in {PUS, TAE}`)
 2. **나머지 편 조건**: 해당 Acno의 지선편(1번 조건에 해당하는 편 전부) 이외
    **나머지 모든 편**이 `Domestic_Intl=='국제선'` — ICN 경유 여부는 무관 (PUS/TAE발

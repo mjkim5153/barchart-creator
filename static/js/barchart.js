@@ -53,18 +53,23 @@ function renderBarchart(data) {
   // 기번 재배정 드래그 상태
   let dragState = null;
 
+  // 행별 높이 누적합 (겹치는 편이 있는 Acno는 lane_count배로 행 높이가 늘어나므로,
+  // 모든 행이 균일한 높이라는 가정 대신 이 배열 기준으로 y좌표를 계산한다)
+  let rowHeights = [];
+  let rowOffsets = [];
+
   // 데이터에서 최소/최대 날짜 산출
   let minDate = null;
   let maxDate = null;
   for (const ac of aircraft) {
     for (const fl of ac.flights) {
-      if (fl.std_kst) {
-        const d = new Date(fl.std_kst);
+      if (fl.ro_kst) {
+        const d = new Date(fl.ro_kst);
         if (!minDate || d < minDate) minDate = new Date(d);
         if (!maxDate || d > maxDate) maxDate = new Date(d);
       }
-      if (fl.sta_kst) {
-        const d = new Date(fl.sta_kst);
+      if (fl.ri_kst) {
+        const d = new Date(fl.ri_kst);
         if (!maxDate || d > maxDate) maxDate = new Date(d);
       }
     }
@@ -136,6 +141,9 @@ function renderBarchart(data) {
     .attr('width', chartW - MARGIN.left - MARGIN.right)
     .attr('height', MARGIN.top);
 
+  // 지연 BAR + 메인 BAR 병합용 클립패스 컨테이너 (redrawAll마다 초기화)
+  const barClipDefs = defs.append('g').attr('class', 'bar-clip-defs');
+
   // X축 그룹 (고정, 클립 적용)
   const xAxisGroup = svg.append('g')
     .attr('class', 'x-axis')
@@ -187,8 +195,8 @@ function renderBarchart(data) {
   }
 
   function pixelYToRowIdx(svgY) {
-    const scaledRowH = getScaledRowHeight();
-    return Math.floor((svgY - MARGIN.top + scrollY) / scaledRowH);
+    const y = svgY - MARGIN.top + scrollY;
+    return d3.bisect(rowOffsets, y) - 1;
   }
 
   function clientYToSvgY(clientY) {
@@ -201,7 +209,10 @@ function renderBarchart(data) {
     xOffset = clampedOffset;
 
     const scaledRowH = getScaledRowHeight();
-    const totalContentH = MARGIN.top + totalRows * scaledRowH + MARGIN.bottom;
+    rowHeights = aircraft.map(ac => scaledRowH * (ac.lane_count || 1));
+    rowOffsets = [0];
+    rowHeights.forEach(h => rowOffsets.push(rowOffsets[rowOffsets.length - 1] + h));
+    const totalContentH = MARGIN.top + rowOffsets[totalRows] + MARGIN.bottom;
     const viewH = Math.max(containerH, totalContentH);
 
     svg.attr('height', viewH);
@@ -312,16 +323,16 @@ function renderBarchart(data) {
     rowBgGroup.selectAll('rect').data(acnoList).join('rect')
       .attr('x', MARGIN.left)
       .attr('width', chartW - MARGIN.left - MARGIN.right)
-      .attr('y', (d, i) => MARGIN.top + i * scaledRowH - scrollY)
-      .attr('height', scaledRowH)
+      .attr('y', (d, i) => MARGIN.top + rowOffsets[i] - scrollY)
+      .attr('height', (d, i) => rowHeights[i])
       .attr('fill', (d, i) => i % 2 === 1 ? '#d9d9d9' : 'transparent');
 
     // --- 행 구분선 ---
     rowLines.selectAll('line').data(acnoList).join('line')
       .attr('x1', MARGIN.left)
       .attr('x2', chartW - MARGIN.right)
-      .attr('y1', (d, i) => MARGIN.top + (i + 1) * scaledRowH - scrollY)
-      .attr('y2', (d, i) => MARGIN.top + (i + 1) * scaledRowH - scrollY)
+      .attr('y1', (d, i) => MARGIN.top + rowOffsets[i + 1] - scrollY)
+      .attr('y2', (d, i) => MARGIN.top + rowOffsets[i + 1] - scrollY)
       .attr('stroke', '#e5e7eb')
       .attr('stroke-width', 0.5);
 
@@ -329,8 +340,9 @@ function renderBarchart(data) {
     yAxisGroup.selectAll('*').remove();
     acnoList.forEach((acno, idx) => {
       const ac = aircraft.find(a => a.acno === acno);
-      const yPos = MARGIN.top + idx * scaledRowH - scrollY;
-      if (yPos + scaledRowH < MARGIN.top - 20 || yPos > viewH) return;
+      const rowH = rowHeights[idx];
+      const yPos = MARGIN.top + rowOffsets[idx] - scrollY;
+      if (yPos + rowH < MARGIN.top - 20 || yPos > viewH) return;
 
       // Y축 라벨 영역 배경색 (교대 행)
       if (idx % 2 === 1) {
@@ -338,14 +350,14 @@ function renderBarchart(data) {
           .attr('x', -MARGIN.left)
           .attr('y', yPos)
           .attr('width', MARGIN.left)
-          .attr('height', scaledRowH)
+          .attr('height', rowH)
           .attr('fill', '#d9d9d9');
       }
 
       // 번호 + 기번 (좌측 정렬)
       yAxisGroup.append('text')
         .attr('x', -MARGIN.left + 4)
-        .attr('y', yPos + scaledRowH / 2)
+        .attr('y', yPos + rowH / 2)
         .attr('text-anchor', 'start')
         .attr('dominant-baseline', 'middle')
         .attr('fill', ac && ac.connection_error ? '#ef4444' : '#374151')
@@ -358,7 +370,7 @@ function renderBarchart(data) {
       if (grade) {
         yAxisGroup.append('text')
           .attr('x', -4)
-          .attr('y', yPos + scaledRowH / 2)
+          .attr('y', yPos + rowH / 2)
           .attr('text-anchor', 'end')
           .attr('dominant-baseline', 'middle')
           .attr('fill', '#94a3b8')
@@ -369,22 +381,40 @@ function renderBarchart(data) {
 
     // --- BAR ---
     barGroup.selectAll('*').remove();
+    barClipDefs.selectAll('*').remove();
 
     const clipL = shiftedXScale(xStart);
     const clipR = shiftedXScale(xEnd);
 
     aircraft.forEach((ac, acIdx) => {
-      const yBase = MARGIN.top + acIdx * scaledRowH - scrollY;
-      const barY = yBase + (scaledRowH - BAR_HEIGHT * yZoom) / 2;
+      const yBase = MARGIN.top + rowOffsets[acIdx] - scrollY;
+      const rowH = rowHeights[acIdx];
       const scaledBarH = Math.max(4, BAR_HEIGHT * yZoom);
 
-      if (yBase + scaledRowH < MARGIN.top || yBase > viewH) return;
+      if (yBase + rowH < MARGIN.top || yBase > viewH) return;
 
       ac.flights.forEach((fl, idx) => {
-        if (!fl.std_kst || !fl.sta_kst) return;
+        if (!fl.ro_kst || !fl.ri_kst) return;
 
-        const std = new Date(fl.std_kst);
-        const sta = new Date(fl.sta_kst);
+        const lane = fl.lane || 0;
+        const barY = yBase + lane * scaledRowH + (scaledRowH - scaledBarH) / 2;
+
+        const std = new Date(fl.ro_kst);
+        const sta = new Date(fl.ri_kst);
+
+        // 지연 BAR: STD_KST ~ RO_KST, RO가 STD보다 늦은 경우만 표출
+        let delayDrawn = false;
+        let dX1 = null, dX2 = null;
+        if (fl.std_kst) {
+          const plannedStd = new Date(fl.std_kst);
+          if (plannedStd < std) {
+            const dX1Raw = shiftedXScale(plannedStd);
+            const dX2Raw = shiftedXScale(std);
+            dX1 = Math.max(dX1Raw, clipL);
+            dX2 = Math.min(dX2Raw, clipR);
+            if (!(dX2 < clipL || dX1 > clipR)) delayDrawn = true;
+          }
+        }
 
         const x1Raw = shiftedXScale(std);
         const x2Raw = shiftedXScale(sta);
@@ -395,14 +425,60 @@ function renderBarchart(data) {
 
         const colorClass = fl.color === 'navy' ? 'bar-navy' : fl.color === 'cobalt' ? 'bar-cobalt' : 'bar-gray';
 
-        const barRect = barGroup.append('rect')
-          .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}`)
-          .attr('x', x1)
-          .attr('y', barY)
-          .attr('width', barW)
-          .attr('height', scaledBarH)
-          .attr('rx', 3)
-          .style('cursor', 'grab');
+        let barRect;
+        if (delayDrawn) {
+          // 지연 BAR + 메인 BAR를 하나의 둥근 테두리 안에 합쳐서 표출
+          // (둥근 클립패스로 외곽만 둥글게, 내부 두 색 영역은 각지게 그려 이음매를 없앰)
+          const outerLeft = dX1;
+          const outerW = Math.max(1, x2 - outerLeft);
+          const clipId = `bar-clip-${acIdx}-${idx}`;
+
+          barClipDefs.append('clipPath')
+            .attr('id', clipId)
+            .append('rect')
+            .attr('x', outerLeft)
+            .attr('y', barY)
+            .attr('width', outerW)
+            .attr('height', scaledBarH)
+            .attr('rx', 3);
+
+          const mergedGroup = barGroup.append('g')
+            .attr('clip-path', `url(#${clipId})`);
+
+          mergedGroup.append('rect')
+            .attr('class', 'bar-delay')
+            .attr('x', dX1)
+            .attr('y', barY)
+            .attr('width', Math.max(1, dX2 - dX1))
+            .attr('height', scaledBarH);
+
+          barRect = mergedGroup.append('rect')
+            .attr('class', `bar ${colorClass}`)
+            .attr('x', x1)
+            .attr('y', barY)
+            .attr('width', barW)
+            .attr('height', scaledBarH)
+            .style('cursor', 'grab');
+
+          if (fl.connection_error) {
+            barGroup.append('rect')
+              .attr('class', 'bar-error-outline')
+              .attr('x', outerLeft)
+              .attr('y', barY)
+              .attr('width', outerW)
+              .attr('height', scaledBarH)
+              .attr('rx', 3);
+          }
+        } else {
+          barRect = barGroup.append('rect')
+            .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}`)
+            .attr('x', x1)
+            .attr('y', barY)
+            .attr('width', barW)
+            .attr('height', scaledBarH)
+            .attr('rx', 3)
+            .style('cursor', 'grab');
+        }
 
         if (showText && barW >= MIN_TEXT_PX) {
           barGroup.append('text')
@@ -428,11 +504,36 @@ function renderBarchart(data) {
             .text(fl.arrstn);
         }
 
+        // STA(도착 예정시각) 마커: 노란색 세로선 + 상단 정삼각형
+        // (조기도착 시 STA가 RI_KST보다 뒤에 있어 바 바깥에 그려질 수 있음 — 정상 동작)
+        if (fl.sta_kst) {
+          const plannedSta = new Date(fl.sta_kst);
+          const staX = shiftedXScale(plannedSta);
+          if (staX >= clipL && staX <= clipR) {
+            barGroup.append('line')
+              .attr('class', 'sta-line')
+              .attr('x1', staX)
+              .attr('x2', staX)
+              .attr('y1', barY)
+              .attr('y2', barY + scaledBarH);
+
+            const triH = scaledBarH * 0.35;
+            const triW = triH * 1.15;
+            barGroup.append('polygon')
+              .attr('class', 'sta-triangle')
+              .attr('points', [
+                `${staX},${barY}`,
+                `${staX - triW / 2},${barY - triH}`,
+                `${staX + triW / 2},${barY - triH}`,
+              ].join(' '));
+          }
+        }
+
         // Ground Time
         if (showText && idx > 0 && fl.ground_time_before !== null) {
           const prevFl = ac.flights[idx - 1];
-          if (prevFl.sta_kst) {
-            const prevSta = new Date(prevFl.sta_kst);
+          if (prevFl.ri_kst) {
+            const prevSta = new Date(prevFl.ri_kst);
             const gtX = (shiftedXScale(prevSta) + shiftedXScale(std)) / 2;
             const isDomestic = KOREAN_AIRPORTS.has((fl.depstn || '').trim().toUpperCase())
                             && KOREAN_AIRPORTS.has((fl.arrstn || '').trim().toUpperCase());
@@ -464,18 +565,30 @@ function renderBarchart(data) {
         barRect.on('mousemove', (event) => {
           if (dragState) return;
           const gtText = fl.ground_time_before !== null ? `${fl.ground_time_before}분` : '-';
+          const btText = fl.blocktime !== null && fl.blocktime !== undefined ? `${fl.blocktime}분` : '-';
+          const dlaText = (v) => (v !== null && v !== undefined) ? `${v}분` : '-';
+          const stdDelayMin = (fl.std_kst && fl.ro_kst && new Date(fl.ro_kst) > new Date(fl.std_kst))
+            ? Math.round((new Date(fl.ro_kst) - new Date(fl.std_kst)) / 60000)
+            : null;
+          const stdDelayText = stdDelayMin !== null ? `${stdDelayMin}분` : '-';
           tooltip.classList.remove('hidden');
           tooltip.innerHTML = `
             <div class="tt-title">${fl.fltno}</div>
             <div class="tt-row"><span class="tt-label">기번</span><span>${ac.acno}</span></div>
             <div class="tt-row"><span class="tt-label">출발</span><span>${fl.depstn}</span></div>
             <div class="tt-row"><span class="tt-label">도착</span><span>${fl.arrstn}</span></div>
-            <div class="tt-row"><span class="tt-label">STD</span><span>${formatKST(fl.std_kst)}</span></div>
-            <div class="tt-row"><span class="tt-label">STA</span><span>${formatKST(fl.sta_kst)}</span></div>
-            <div class="tt-row"><span class="tt-label">BT</span><span>${fl.blocktime}분</span></div>
+            <div class="tt-row"><span class="tt-label">RO</span><span>${formatKST(fl.ro_kst)}</span></div>
+            <div class="tt-row"><span class="tt-label">RI</span><span>${formatKST(fl.ri_kst)}</span></div>
+            <div class="tt-row"><span class="tt-label">BT</span><span>${btText}</span></div>
             <div class="tt-row"><span class="tt-label">GT</span><span>${gtText}</span></div>
             <div class="tt-row"><span class="tt-label">기종</span><span>${fl.actype}</span></div>
             <div class="tt-row"><span class="tt-label">상태</span><span>${fl.status}</span></div>
+            <div class="tt-row"><span class="tt-label">결항지연</span><span>${dlaText(fl.cnx_dla)}</span></div>
+            <div class="tt-row"><span class="tt-label">출발지연</span><span>${dlaText(fl.dep_dla)}</span></div>
+            <div class="tt-row"><span class="tt-label">관제지연</span><span>${dlaText(fl.atc_dla)}</span></div>
+            <div class="tt-row"><span class="tt-label">지연(RO-STD)</span><span>${stdDelayText}</span></div>
+            <div class="tt-row"><span class="tt-label">NAT</span><span>${fl.nat || '-'}</span></div>
+            <div class="tt-row"><span class="tt-label">MTTT</span><span>${fl.mttt ?? '-'}</span></div>
           `;
           positionTooltip(event, tooltip);
         }).on('mouseleave', () => {
@@ -513,13 +626,12 @@ function renderBarchart(data) {
     const rowIdx = pixelYToRowIdx(svgY);
     dragState.targetRowIdx = (rowIdx >= 0 && rowIdx < totalRows) ? rowIdx : null;
     if (dragState.targetRowIdx !== null) {
-      const scaledRowH = getScaledRowHeight();
       dragLayer.append('rect')
         .attr('class', 'row-drop-highlight')
         .attr('x', MARGIN.left)
-        .attr('y', MARGIN.top + dragState.targetRowIdx * scaledRowH - scrollY)
+        .attr('y', MARGIN.top + rowOffsets[dragState.targetRowIdx] - scrollY)
         .attr('width', chartW - MARGIN.left - MARGIN.right)
-        .attr('height', scaledRowH);
+        .attr('height', rowHeights[dragState.targetRowIdx]);
     }
 
     const edgeZone = 40;
@@ -535,8 +647,7 @@ function renderBarchart(data) {
     const step = () => {
       if (!dragState || dragState.autoScrollDir === 0) { if (dragState) dragState.rafId = null; return; }
       scrollY += dragState.autoScrollDir * 15;
-      const scaledRowH = getScaledRowHeight();
-      const maxScrollY = Math.max(0, MARGIN.top + totalRows * scaledRowH + MARGIN.bottom - containerH);
+      const maxScrollY = Math.max(0, MARGIN.top + rowOffsets[totalRows] + MARGIN.bottom - containerH);
       scrollY = Math.max(0, Math.min(scrollY, maxScrollY));
       redrawAll();
       updateGhost();
@@ -756,6 +867,8 @@ function buildExportStyleText(liveSvg) {
     { selector: '.bar-cobalt', props: { fill: '#1a56c4' } },
     { selector: '.bar-gray', props: { fill: '#4a4a52' } },
     { selector: '.bar-error', props: { stroke: '#ef4444', 'stroke-width': '2.5px' } },
+    { selector: '.bar-error-outline', props: { fill: 'none', stroke: '#ef4444', 'stroke-width': '2.5px' } },
+    { selector: '.bar-delay', props: { fill: '#dc2626' } },
     { selector: '.bar-text', props: { fill: '#ffffff', 'font-size': '11px', 'font-weight': '600', 'text-anchor': 'middle', 'dominant-baseline': 'middle' } },
     { selector: '.airport-label', props: { fill: '#374151', 'font-size': '10px' } },
     { selector: '.gt-label', props: { 'font-size': '10px', 'text-anchor': 'middle' } },
@@ -814,10 +927,9 @@ function downloadSvgAsJpeg(svgString, width, height, done) {
       const now = new Date();
       const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
         + `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-      const startVal = (document.getElementById('start-date-input') || {}).value || '';
-      const endVal = (document.getElementById('end-date-input') || {}).value || '';
+      const dateVal = (document.getElementById('query-date-input') || {}).value || '';
       a.href = jpegUrl;
-      a.download = `바차트_${startVal}_${endVal}_${stamp}.jpg`;
+      a.download = `바차트_${dateVal}_${stamp}.jpg`;
       document.body.appendChild(a);
       a.click();
       a.remove();

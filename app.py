@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from data_processor import process_dataframe, filter_for_barchart, compute_summary, get_actype_grade
+from data_processor import process_dataframe, filter_for_barchart, compute_ontime_records, get_actype_grade
 
 
 def _get_base_path():
@@ -51,14 +51,15 @@ app = FastAPI(title="BarChart Creator")
 
 @app.middleware("http")
 async def no_cache_static(request, call_next):
-    """정적 파일(JS/CSS)에 대해 브라우저가 항상 서버에 재검증하도록 강제.
+    """정적 파일(JS/CSS)과 index.html에 대해 브라우저가 항상 서버에 재검증하도록 강제.
 
-    Cache-Control 헤더가 없으면 브라우저가 휴리스틱 캐싱으로 구버전 JS를
-    계속 사용해, 백엔드 API 응답 구조가 바뀌어도 프론트가 갱신되지 않는
-    문제(예: 가동률 표가 최신 데이터에도 "데이터 없음"으로 표출)가 발생한다.
+    Cache-Control 헤더가 없으면 브라우저가 휴리스틱 캐싱으로 구버전 JS/HTML을
+    계속 사용해, 백엔드 API 응답 구조나 index.html의 DOM 구조가 바뀌어도 프론트가
+    갱신되지 않는 문제(예: 가동률 표가 최신 데이터에도 "데이터 없음"으로 표출,
+    또는 구버전 HTML의 element id를 신버전 JS가 찾지 못해 발생하는 오류)가 발생한다.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/static/"):
+    if request.url.path.startswith("/static/") or request.url.path == "/":
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
@@ -143,9 +144,39 @@ async def upload_excel(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
+
+        if 'NAT' not in df.columns:
+            raise HTTPException(status_code=400, detail="필수 컬럼 누락: NAT")
+        if df['NAT'].isna().any() or (df['NAT'].astype(str).str.strip() == '').any():
+            raise HTTPException(status_code=400, detail="NAT 컬럼에 빈 값이 있는 행이 있습니다.")
+
+        if 'MTTT' not in df.columns:
+            raise HTTPException(status_code=400, detail="필수 컬럼 누락: MTTT")
+        if df['MTTT'].isna().any():
+            raise HTTPException(status_code=400, detail="MTTT 컬럼에 빈 값이 있는 행이 있습니다.")
+        try:
+            df['MTTT'] = df['MTTT'].astype(int)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="MTTT 컬럼은 정수만 허용합니다.")
+
+        if 'D_OPER' not in df.columns:
+            raise HTTPException(status_code=400, detail="필수 컬럼 누락: D_OPER")
+        d_oper_str = df['D_OPER'].astype(str).str.strip()
+        d_oper_valid = df['D_OPER'].isna() | (d_oper_str == '') | (d_oper_str == 'Y')
+        if not d_oper_valid.all():
+            raise HTTPException(status_code=400, detail="D_OPER 컬럼은 Y 또는 빈칸만 허용합니다.")
+
         _current_df = process_dataframe(df)
         logger.info(f"업로드 완료: {len(_current_df)} rows")
-        return {"status": "ok", "rows": len(_current_df)}
+
+        dates = []
+        if 'Sch_date_KST' in _current_df.columns:
+            dates = sorted(
+                pd.to_datetime(_current_df['Sch_date_KST']).dt.date.dropna().unique().tolist()
+            )
+        return {"status": "ok", "rows": len(_current_df), "dates": [str(d) for d in dates]}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"업로드 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -153,7 +184,7 @@ async def upload_excel(file: UploadFile = File(...)):
 
 @app.get("/api/metadata")
 async def get_metadata():
-    """현재 데이터의 고유 국적사, NAT 목록"""
+    """현재 데이터의 고유 국적사, TOF 목록"""
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음. 검색 또는 업로드 필요.")
 
@@ -164,35 +195,35 @@ async def get_metadata():
     )
     airlines = [a for a in airlines if a in DOMESTIC_AIRLINES]
 
-    nat_values = []
-    if 'NAT' in _current_df.columns:
-        nat_values = sorted(_current_df['NAT'].dropna().unique().tolist())
+    tof_values = []
+    if 'TOF' in _current_df.columns:
+        tof_values = sorted(_current_df['TOF'].dropna().unique().tolist())
 
-    return {"airlines": airlines, "nat": nat_values}
+    return {"airlines": airlines, "tof": tof_values}
 
 
 @app.get("/api/barchart")
 async def get_barchart(
     airline: str = Query(default=""),
-    nat: str = Query(default=""),
+    tof: str = Query(default=""),
+    date: str = Query(default=""),
 ):
     """바차트 표출용 데이터 반환"""
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    nat_list = [n.strip() for n in nat.split(",") if n.strip()] if nat else []
-    result = filter_for_barchart(_current_df, airline, nat_list)
+    tof_list = [t.strip() for t in tof.split(",") if t.strip()] if tof else []
+    result = filter_for_barchart(_current_df, airline, tof_list, date)
     return JSONResponse(content=result)
 
 
-@app.get("/api/summary")
-async def get_summary(nat: str = Query(default=""), airline: str = Query(default="")):
-    """좌측 요약 패널용 집계 데이터 반환"""
+@app.get("/api/ontime")
+async def get_ontime():
+    """정시율 분석용 편 단위 레코드 리스트 반환 (필터는 전부 프론트에서 처리)"""
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    nat_list = [n.strip() for n in nat.split(",") if n.strip()] if nat else []
-    result = compute_summary(_current_df, nat_list, airline)
+    result = compute_ontime_records(_current_df)
     return JSONResponse(content=result)
 
 
@@ -200,16 +231,17 @@ async def get_summary(nat: str = Query(default=""), airline: str = Query(default
 async def download_template():
     """업로드용 엑셀 양식 템플릿 다운로드"""
     columns = [
-        'Sch_date_KST', 'Sort', 'Fltno', 'Depstn', 'Arrstn', 'Acno', 'Actype',
-        'Status', 'NAT', 'Stand', 'STD_UTC', 'STA_UTC', 'ATD_UTC', 'ATA_UTC',
-        'Blocktime', 'Bt_idx'
+        'Sch_date_KST', 'Fltno', 'Depstn', 'Arrstn', 'Acno', 'Actype',
+        'TOF', 'STD_UTC', 'STA_UTC', 'RO_UTC', 'RI_UTC',
+        'CNX_DLA', 'DEP_DLA', 'ATC_DLA', 'NAT', 'MTTT', 'D_OPER'
     ]
     sample = pd.DataFrame([{
-        'Sch_date_KST': '2026-03-16', 'Sort': 'DEP', 'Fltno': 'KE101',
+        'Sch_date_KST': '2026-03-16', 'Fltno': 'KE101',
         'Depstn': 'ICN', 'Arrstn': 'PUS', 'Acno': 'HL7234', 'Actype': 'B738',
-        'Status': 'ACT', 'NAT': 'D', 'Stand': '101',
-        'STD_UTC': '2026-03-16 00:00:00', 'STA_UTC': '2026-03-16 01:20:00',
-        'ATD_UTC': '', 'ATA_UTC': '', 'Blocktime': 80, 'Bt_idx': 'Y'
+        'TOF': 'D', 'STD_UTC': '2026-03-16 00:00:00', 'STA_UTC': '2026-03-16 01:20:00',
+        'RO_UTC': '2026-03-16 00:05:00', 'RI_UTC': '2026-03-16 01:15:00',
+        'CNX_DLA': 0, 'DEP_DLA': 5, 'ATC_DLA': 0,
+        'NAT': '예시 메모', 'MTTT': 60, 'D_OPER': 'Y'
     }], columns=columns)
     buf = io.BytesIO()
     sample.to_excel(buf, index=False)
@@ -261,45 +293,36 @@ async def update_acno(req: UpdateAcnoRequest):
 
 
 @app.get("/api/download")
-async def download_excel(airline: str = Query(default=""), nat: str = Query(default="")):
-    """3시트 엑셀 다운로드 (요약/바차트/RAW)"""
+async def download_excel(airline: str = Query(default=""), tof: str = Query(default=""), date: str = Query(default="")):
+    """3시트 엑셀 다운로드 (정시율분석/바차트/RAW)"""
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    from data_processor import filter_for_barchart, compute_summary, CARGO_NAT, add_aircraft_type_columns
+    from data_processor import filter_for_barchart, compute_ontime_records, add_aircraft_type_columns
 
-    nat_list = [n.strip() for n in nat.split(",") if n.strip()] if nat else []
+    tof_list = [t.strip() for t in tof.split(",") if t.strip()] if tof else []
 
-    # Sheet 1: 요약정보 (가동률 + GT 분석)
-    summary = compute_summary(_current_df, nat_list, airline)
-    op_rows = summary.get('operation_summary', {}).get('rows', {}).get('all', [])
-    summary_df = pd.DataFrame(op_rows) if op_rows else pd.DataFrame()
-
-    # GT 분석 데이터를 테이블 형태로 변환
-    gt_table = summary.get('gt_table', {})
-    gt_excel_rows = []
-    for route_key, route_label in [('domestic', '국내선'), ('international', '국제선')]:
-        route_data = gt_table.get(route_key, {})
-        for al_code, al_data in route_data.items():
-            grade_data = al_data.get('grades', {})
-            grade_flights = al_data.get('grade_flights', {})
-            for grade, bins in grade_data.items():
-                grade_label = '전체' if grade == '전체' else f'{grade}급'
-                flight_count = grade_flights.get(grade, 0)
-                row = {
-                    '노선유형': route_label,
-                    '항공사': al_code,
-                    '등급': grade_label,
-                    '운항편수': flight_count,
-                }
-                for bin_name, bin_val in bins.items():
-                    row[f'GT {bin_name} (편수)'] = bin_val['count']
-                    row[f'GT {bin_name} (%)'] = bin_val['pct']
-                gt_excel_rows.append(row)
-    gt_df = pd.DataFrame(gt_excel_rows) if gt_excel_rows else pd.DataFrame()
+    # Sheet 1: 정시율분석 (지연기준 15분 고정, 필터 없이 전체 기준 날짜별 집계)
+    ONTIME_DELAY_THRESHOLD = 15
+    ontime_records = compute_ontime_records(_current_df).get('records', [])
+    ontime_rows = []
+    if ontime_records:
+        ontime_df = pd.DataFrame(ontime_records)
+        for date_val, group in ontime_df.groupby('date'):
+            total = len(group)
+            delayed = int((group['delay_min'] > ONTIME_DELAY_THRESHOLD).sum())
+            rate = round((1 - delayed / total) * 100, 1) if total > 0 else 0.0
+            ontime_rows.append({
+                '날짜': date_val,
+                '운항편수': total,
+                '지연편수': delayed,
+                '정시율(%)': rate,
+            })
+        ontime_rows.sort(key=lambda r: r['날짜'])
+    summary_df = pd.DataFrame(ontime_rows) if ontime_rows else pd.DataFrame()
 
     # Sheet 2: 바차트 데이터
-    barchart_json = filter_for_barchart(_current_df, airline, nat_list)
+    barchart_json = filter_for_barchart(_current_df, airline, tof_list, date)
     bar_rows = []
     for ac in barchart_json.get('aircraft', []):
         for fl in ac.get('flights', []):
@@ -308,8 +331,8 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
                 'Fltno': fl['fltno'],
                 'Depstn': fl['depstn'],
                 'Arrstn': fl['arrstn'],
-                'STD_KST': fl['std_kst'],
-                'STA_KST': fl['sta_kst'],
+                'RO_KST': fl['ro_kst'],
+                'RI_KST': fl['ri_kst'],
                 'Blocktime': fl['blocktime'],
                 'GT': fl['ground_time_before'],
                 'Status': fl['status'],
@@ -322,14 +345,7 @@ async def download_excel(airline: str = Query(default=""), nat: str = Query(defa
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        # 요약정보 시트: 가동률 테이블 + 빈 행 + GT 분석 테이블
-        if not summary_df.empty:
-            summary_df.to_excel(writer, sheet_name='요약정보', index=False, startrow=0)
-            gt_start_row = len(summary_df) + 3  # 가동률 아래 빈 행 2줄
-        else:
-            gt_start_row = 0
-        if not gt_df.empty:
-            gt_df.to_excel(writer, sheet_name='요약정보', index=False, startrow=gt_start_row)
+        summary_df.to_excel(writer, sheet_name='정시율분석', index=False)
         barchart_df.to_excel(writer, sheet_name='바차트', index=False)
         raw_df.to_excel(writer, sheet_name='RAW', index=False)
     buf.seek(0)

@@ -35,21 +35,19 @@ async function fetchMetadata() {
   return res.json();
 }
 
-async function fetchBarchartData(airline, natList) {
+async function fetchBarchartData(airline, tofList, date) {
   const params = new URLSearchParams();
   if (airline) params.set('airline', airline);
-  if (natList && natList.length) params.set('nat', natList.join(','));
+  if (tofList && tofList.length) params.set('tof', tofList.join(','));
+  if (date) params.set('date', date);
   const res = await fetch(`/api/barchart?${params}`);
   if (!res.ok) throw new Error('바차트 데이터 로드 실패');
   return res.json();
 }
 
-async function fetchSummaryData(natList, airline) {
-  const params = new URLSearchParams();
-  if (natList && natList.length) params.set('nat', natList.join(','));
-  if (airline) params.set('airline', airline);
-  const res = await fetch(`/api/summary?${params}`);
-  if (!res.ok) throw new Error('요약 데이터 로드 실패');
+async function fetchOntimeData() {
+  const res = await fetch('/api/ontime');
+  if (!res.ok) throw new Error('정시율 데이터 로드 실패');
   return res.json();
 }
 

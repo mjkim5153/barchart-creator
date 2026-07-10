@@ -2,7 +2,7 @@
  * main.js — 앱 초기화 및 이벤트 연결
  */
 
-// 기본 날짜: 어제
+// 기본 날짜: 어제 (자유 입력 모드)
 (function setDefaultDates() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -10,16 +10,13 @@
   const mm = String(yesterday.getMonth() + 1).padStart(2, '0');
   const dd = String(yesterday.getDate()).padStart(2, '0');
   const dateStr = `${yyyy}-${mm}-${dd}`;
-  document.getElementById('start-date-input').value = dateStr;
-  document.getElementById('end-date-input').value = dateStr;
+  setQueryDateFreeInput(dateStr);
 })();
 
 const searchBtn = document.getElementById('search-btn');
 const uploadInput = document.getElementById('upload-input');
 const spinner = document.getElementById('loading-spinner');
 const statusMsg = document.getElementById('status-msg');
-const routeSearchBtn = document.getElementById('route-search-btn');
-const routeInput = document.getElementById('route-input');
 const panelToggleBtn = document.getElementById('panel-toggle-btn');
 const mainContent = document.getElementById('main-content');
 
@@ -40,20 +37,37 @@ function showError(msg) {
   setTimeout(() => { statusMsg.style.color = ''; }, 3000);
 }
 
+// RO_UTC/RI_UTC 결측 편 경고 배너 (STD/STA 폴백 없이 명시적으로 표출)
+function renderRoRiWarning(missingList) {
+  const banner = document.getElementById('ro-ri-warning');
+  if (!missingList || missingList.length === 0) {
+    banner.classList.add('hidden');
+    return;
+  }
+  const title = banner.querySelector('.ro-ri-warning-title');
+  const list = banner.querySelector('.ro-ri-warning-list');
+  title.textContent = `RO/RI 실적 데이터 없음 (${missingList.length}건) — 아래 편은 바차트에 표출되지 않습니다`;
+  list.innerHTML = missingList
+    .map(m => `<li>${m.fltno} (${m.acno}): ${m.missing} 없음</li>`)
+    .join('');
+  banner.classList.remove('hidden');
+}
+
 // 메타데이터 로드 후 필터 UI 갱신 + 차트/요약 렌더링
 async function loadChartsAndSummary() {
   try {
     const [meta] = await Promise.all([fetchMetadata()]);
     populateAirlineSelect(meta.airlines);
-    populateNatCheckboxes(meta.nat);
+    populateTofCheckboxes(meta.tof);
 
     const airline = getSelectedAirline();
-    const natList = getSelectedNatList();
+    const tofList = getSelectedTofList();
+    const date = getQueryDate();
 
     showLoading('차트 로딩 중...');
-    const [barchartData, summaryData] = await Promise.all([
-      fetchBarchartData(airline, natList),
-      fetchSummaryData(natList, airline),
+    const [barchartData, ontimeData] = await Promise.all([
+      fetchBarchartData(airline, tofList, date),
+      fetchOntimeData(),
     ]);
 
     // #7 기재 필터 적용
@@ -61,7 +75,8 @@ async function loadChartsAndSummary() {
     const filteredData = filterAircraftByType(barchartData, aircraftFilter);
 
     renderBarchart(filteredData);
-    renderSummary(summaryData);
+    renderOntimeTable(ontimeData);
+    renderRoRiWarning(filteredData.missing_ro_ri);
     hideLoading(`항공기 ${filteredData.aircraft.length}대 표출`);
   } catch (e) {
     showError(e.message);
@@ -71,12 +86,13 @@ async function loadChartsAndSummary() {
 // 필터만 변경 시 (재크롤링 없이 재조회)
 async function refreshCharts() {
   const airline = getSelectedAirline();
-  const natList = getSelectedNatList();
+  const tofList = getSelectedTofList();
+  const date = getQueryDate();
   try {
     showLoading('필터 적용 중...');
-    const [barchartData, summaryData] = await Promise.all([
-      fetchBarchartData(airline, natList),
-      fetchSummaryData(natList, airline),
+    const [barchartData, ontimeData] = await Promise.all([
+      fetchBarchartData(airline, tofList, date),
+      fetchOntimeData(),
     ]);
 
     // #7 기재 필터 적용
@@ -84,7 +100,8 @@ async function refreshCharts() {
     const filteredData = filterAircraftByType(barchartData, aircraftFilter);
 
     renderBarchart(filteredData);
-    renderSummary(summaryData);
+    renderOntimeTable(ontimeData);
+    renderRoRiWarning(filteredData.missing_ro_ri);
     hideLoading(`항공기 ${filteredData.aircraft.length}대 표출`);
   } catch (e) {
     showError(e.message);
@@ -105,13 +122,14 @@ async function reassignAcno(rowId, newAcno) {
 
 // 검색 (크롤링)
 searchBtn.addEventListener('click', async () => {
-  const startDate = document.getElementById('start-date-input').value;
-  const endDate = document.getElementById('end-date-input').value;
-  if (!startDate || !endDate) { showError('시작일과 종료일을 선택하세요.'); return; }
-  if (startDate > endDate) { showError('시작일이 종료일보다 늦습니다.'); return; }
+  const queryDate = document.getElementById('query-date-input').value;
+  if (!queryDate) { showError('조회일을 선택하세요.'); return; }
   try {
     showLoading('데이터 수집 중... (수 분 소요될 수 있음)');
-    await crawlData(startDate, endDate);
+    await crawlData(queryDate, queryDate);
+    // 크롤링 데이터는 항상 단일 날짜이므로 업로드로 인한 제한(select) 모드를 해제하고
+    // 다음 조회를 위해 자유 입력 상태로 되돌린다.
+    setQueryDateFreeInput(queryDate);
     hideLoading('수집 완료');
     await loadChartsAndSummary();
   } catch (e) {
@@ -126,7 +144,18 @@ uploadInput.addEventListener('change', async (event) => {
   try {
     showLoading(`"${file.name}" 업로드 중...`);
     const result = await uploadExcel(file);
-    hideLoading(`업로드 완료 (${result.rows}행)`);
+    const dates = result.dates || [];
+    if (dates.length > 0) {
+      // 백엔드가 오름차순 정렬해서 내려주므로 dates[0]이 가장 이른 날짜
+      setQueryDateRestrictedSelect(dates, dates[0]);
+      if (dates.length > 1) {
+        hideLoading(`업로드 완료 (${result.rows}행) — 여러 날짜 포함, 가장 이른 날짜(${dates[0]})로 조회`);
+      } else {
+        hideLoading(`업로드 완료 (${result.rows}행)`);
+      }
+    } else {
+      hideLoading(`업로드 완료 (${result.rows}행)`);
+    }
     await loadChartsAndSummary();
   } catch (e) {
     showError(e.message);
@@ -137,31 +166,33 @@ uploadInput.addEventListener('change', async (event) => {
 // 항공사 필터 변경
 document.getElementById('airline-select').addEventListener('change', refreshCharts);
 
-// NAT 필터 변경 (이벤트 위임)
-document.getElementById('nat-container').addEventListener('change', refreshCharts);
+// TOF 필터 변경 (이벤트 위임)
+document.getElementById('tof-container').addEventListener('change', refreshCharts);
 
 // #7 기재 필터 변경 (요약에는 영향 없이 바차트만 갱신)
 document.getElementById('aircraft-filter').addEventListener('change', refreshCharts);
 
-// #11 GT 필터 변경
-document.getElementById('gt-route-type').addEventListener('change', refreshGTTable);
-document.getElementById('gt-grade-filter').addEventListener('change', refreshGTTable);
+// 조회일 change 리스너는 setQueryDateFreeInput/setQueryDateRestrictedSelect가 교체할 때마다
+// 새 엘리먼트에 직접 재바인딩하므로(filters.js), 여기서 별도로 붙이지 않는다(중복 바인딩 방지).
 
-// 노선 BT 검색
-routeSearchBtn.addEventListener('click', () => {
-  searchRouteStats(routeInput.value);
+// 업로드로 제한(select)된 조회일을 자유 입력으로 되돌리기 (새 날짜 크롤링 등)
+document.getElementById('query-date-free-btn').addEventListener('click', () => {
+  setQueryDateFreeInput(getQueryDate());
 });
-routeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') searchRouteStats(routeInput.value);
-});
+
+// 정시율 분석 필터 변경 (서버 재조회 없이 클라이언트에서 재계산)
+['ontime-date-filter', 'ontime-aircraft-filter', 'ontime-tof-filter', 'ontime-nat-filter', 'ontime-delay-threshold']
+  .forEach(id => document.getElementById(id).addEventListener('change', recomputeOntimeTable));
 
 // 엑셀 다운로드
 document.getElementById('download-btn').addEventListener('click', () => {
   const airline = getSelectedAirline();
-  const natList = getSelectedNatList();
+  const tofList = getSelectedTofList();
+  const date = getQueryDate();
   const params = new URLSearchParams();
   if (airline) params.set('airline', airline);
-  if (natList.length) params.set('nat', natList.join(','));
+  if (tofList.length) params.set('tof', tofList.join(','));
+  if (date) params.set('date', date);
   window.location.href = `/api/download?${params}`;
 });
 

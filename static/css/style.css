@@ -47,7 +47,7 @@ body {
   font-size: 13px;
 }
 
-.nat-multiselect {
+.tof-multiselect {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -59,7 +59,7 @@ body {
   min-height: 30px;
 }
 
-.nat-multiselect label {
+.tof-multiselect label {
   display: flex;
   align-items: center;
   gap: 3px;
@@ -69,7 +69,7 @@ body {
   white-space: nowrap;
 }
 
-.nat-multiselect input[type="checkbox"] {
+.tof-multiselect input[type="checkbox"] {
   cursor: pointer;
 }
 
@@ -101,6 +101,17 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .hidden { display: none !important; }
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #93c5fd;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-btn:hover { color: #fff; }
 
 .status-msg {
   font-size: 12px;
@@ -174,38 +185,7 @@ body {
   color: #2563eb;
 }
 
-/* 가동률 날짜 필터 */
-.op-date-filter {
-  margin-bottom: 6px;
-}
-.op-date-filter select {
-  padding: 3px 6px;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  font-size: 11px;
-  background: #fff;
-  width: 100%;
-}
-
-/* 가동률 테이블 */
-#operation-rate-table table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-#operation-rate-table th {
-  background: #f1f5f9;
-  padding: 3px 4px;
-  text-align: center;
-  border: 1px solid #e2e8f0;
-}
-#operation-rate-table td {
-  padding: 3px 4px;
-  border: 1px solid #e2e8f0;
-  text-align: center;
-}
-
-/* 가동률 등급 필터 컨트롤 */
+/* 정시율 분석 필터 컨트롤 */
 .op-filter-controls {
   display: flex;
   flex-wrap: wrap;
@@ -220,83 +200,23 @@ body {
   font-size: 11px;
   background: #fff;
   flex: 1;
+  min-width: 90px;
 }
 
-/* #11 GT 필터 컨트롤 */
-.gt-filter-controls {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.gt-filter-controls select {
-  padding: 3px 6px;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  font-size: 11px;
-  background: #fff;
-  flex: 1;
-}
-
-/* #11 GT 분석 테이블 */
-.gt-table-block {
-  margin-bottom: 10px;
-}
-
-.gt-table-block h4 {
-  font-size: 12px;
-  color: #475569;
-  margin-bottom: 3px;
-}
-
-.gt-analysis-table {
+/* 정시율 분석 테이블 */
+#ontime-table table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
-
-.gt-analysis-table th {
+#ontime-table th {
   background: #f1f5f9;
-  padding: 4px 3px;
+  padding: 3px 4px;
   text-align: center;
   border: 1px solid #e2e8f0;
-  font-weight: 600;
 }
-
-.gt-analysis-table td {
-  padding: 4px 3px;
-  border: 1px solid #e2e8f0;
-  text-align: center;
-}
-
-/* 히스토그램 (기존 호환) */
-.gt-hist-block { margin-bottom: 8px; }
-.gt-hist-block h4 { font-size: 11px; color: #475569; margin-bottom: 2px; }
-
-/* 노선 BT 검색 */
-.route-search {
-  display: flex; gap: 4px; margin-bottom: 6px;
-}
-#route-input {
-  flex: 1;
-  padding: 3px 6px;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  font-size: 12px;
-}
-
-#route-stats-table table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-#route-stats-table th {
-  background: #f1f5f9;
-  padding: 4px;
-  border: 1px solid #e2e8f0;
-}
-#route-stats-table td {
-  padding: 4px;
+#ontime-table td {
+  padding: 3px 4px;
   border: 1px solid #e2e8f0;
   text-align: center;
 }
@@ -319,11 +239,53 @@ body {
   display: block;
 }
 
+.ro-ri-warning {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 35%;
+  overflow-y: auto;
+  background: rgba(254, 242, 242, 0.97);
+  border-bottom: 2px solid #ef4444;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.ro-ri-warning-title {
+  font-weight: 700;
+  color: #b91c1c;
+  margin-bottom: 4px;
+}
+.ro-ri-warning-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #7f1d1d;
+}
+.ro-ri-warning-list li {
+  line-height: 1.5;
+}
+
 /* ===== BAR 색상 ===== */
 .bar-navy   { fill: #003580; }   /* 국내선 - 제주 노선 (네이비) */
 .bar-cobalt { fill: #1a56c4; }   /* 국내선 - 일반 (코발트 블루) */
 .bar-gray   { fill: #4a4a52; }   /* 국제선 (진한 회색) */
 .bar-error  { stroke: #ef4444; stroke-width: 2.5px; }
+.bar-delay  { fill: #dc2626; }   /* 지연(STD~RO) 구간 */
+.bar-error-outline { fill: none; stroke: #ef4444; stroke-width: 2.5px; pointer-events: none; }
+
+/* ===== STA(도착 예정시각) 마커 ===== */
+.sta-line {
+  stroke: #facc15;
+  stroke-width: 2px;
+  pointer-events: none;
+}
+
+.sta-triangle {
+  fill: #facc15;
+  pointer-events: none;
+}
 
 /* ===== 기번 재배정 드래그 ===== */
 .bar-drag-ghost {
@@ -426,9 +388,3 @@ body.dragging-acno {
   line-height: 1.4;
 }
 
-.data-info-ungraded {
-  font-size: 10px;
-  color: #f97316;
-  margin-top: 3px;
-  line-height: 1.4;
-}

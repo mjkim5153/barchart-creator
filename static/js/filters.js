@@ -23,38 +23,38 @@ function populateAirlineSelect(airlines) {
   if (airlines.includes(current)) sel.value = current;
 }
 
-function populateNatCheckboxes(natValues) {
-  const container = document.getElementById('nat-container');
-  const checkedSet = getCheckedNat();
+function populateTofCheckboxes(tofValues) {
+  const container = document.getElementById('tof-container');
+  const checkedSet = getCheckedTof();
   container.innerHTML = '';
 
   // 전체 선택 체크박스
   const allLabel = document.createElement('label');
   const allCb = document.createElement('input');
   allCb.type = 'checkbox';
-  allCb.id = 'nat-all';
+  allCb.id = 'tof-all';
   allCb.checked = checkedSet.size === 0;
   allCb.addEventListener('change', () => {
     if (allCb.checked) {
-      container.querySelectorAll('input[data-nat]').forEach(cb => { cb.checked = false; });
+      container.querySelectorAll('input[data-tof]').forEach(cb => { cb.checked = false; });
     }
   });
   allLabel.appendChild(allCb);
   allLabel.appendChild(document.createTextNode('전체'));
   container.appendChild(allLabel);
 
-  natValues.forEach(nat => {
+  tofValues.forEach(tof => {
     const label = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.dataset.nat = nat;
-    cb.checked = checkedSet.has(nat);
+    cb.dataset.tof = tof;
+    cb.checked = checkedSet.has(tof);
     cb.addEventListener('change', () => {
-      const allCheck = document.getElementById('nat-all');
+      const allCheck = document.getElementById('tof-all');
       if (allCheck) allCheck.checked = false;
     });
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(nat));
+    label.appendChild(document.createTextNode(tof));
     container.appendChild(label);
   });
 }
@@ -63,16 +63,51 @@ function getSelectedAirline() {
   return document.getElementById('airline-select').value;
 }
 
-function getCheckedNat() {
+function getQueryDate() {
+  return document.getElementById('query-date-input').value;
+}
+
+// 조회일 필드를 자유 입력(네이티브 date input)으로 전환 — 기본 상태 및 크롤링 검색용
+function setQueryDateFreeInput(value) {
+  const field = document.getElementById('query-date-field');
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.id = 'query-date-input';
+  input.value = value || '';
+  input.addEventListener('change', refreshCharts);
+  field.innerHTML = '';
+  field.appendChild(input);
+  document.getElementById('query-date-free-btn').classList.add('hidden');
+}
+
+// 조회일 필드를 업로드된 날짜만 고를 수 있는 select로 전환 — 엑셀 업로드 직후 전용
+function setQueryDateRestrictedSelect(dates, selectedValue) {
+  const field = document.getElementById('query-date-field');
+  const select = document.createElement('select');
+  select.id = 'query-date-input';
+  dates.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = d;
+    select.appendChild(opt);
+  });
+  select.value = selectedValue;
+  select.addEventListener('change', refreshCharts);
+  field.innerHTML = '';
+  field.appendChild(select);
+  document.getElementById('query-date-free-btn').classList.remove('hidden');
+}
+
+function getCheckedTof() {
   const checked = new Set();
-  document.querySelectorAll('#nat-container input[data-nat]:checked').forEach(cb => {
-    checked.add(cb.dataset.nat);
+  document.querySelectorAll('#tof-container input[data-tof]:checked').forEach(cb => {
+    checked.add(cb.dataset.tof);
   });
   return checked;
 }
 
-function getSelectedNatList() {
-  const s = getCheckedNat();
+function getSelectedTofList() {
+  const s = getCheckedTof();
   return s.size > 0 ? Array.from(s) : [];
 }
 
@@ -87,7 +122,7 @@ function getSelectedAircraftFilter() {
  * - domestic: 국내기재 (항공편 중 1개라도 양쪽 모두 한국공항이면서 ICN만이 아닌 경우,
  *   또는 그날 ICN을 전혀 경유하지 않으면서 국내 비-ICN 공항 기점 국제선을 운항하는 경우)
  *
- * 예외 1: KAL 지선편(PUS/TAE↔ICN, NAT=PAX) 이후 같은 기재의 나머지 모든 편이
+ * 예외 1: KAL 지선편(PUS/TAE↔ICN, TOF=PAX) 이후 같은 기재의 나머지 모든 편이
  * 국제선이면(ICN 경유 여부 무관 — PUS/TAE발 국제선도 포함), 그 지선편은 국내기재
  * 판정에서 제외한다 (data_processor.py의 _aircraft_type_acno_sets와 동일 규칙).
  *
@@ -100,7 +135,7 @@ function isKalFeederFlight(fl) {
   const isFeederRoute =
     (fl.depstn === 'ICN' && KAL_FEEDER_AIRPORTS_JS.has(fl.arrstn)) ||
     (fl.arrstn === 'ICN' && KAL_FEEDER_AIRPORTS_JS.has(fl.depstn));
-  return airlineCode === 'KAL' && isFeederRoute && fl.nat === 'PAX';
+  return airlineCode === 'KAL' && isFeederRoute && fl.tof === 'PAX';
 }
 
 function touchesICN(fl) {
@@ -151,5 +186,8 @@ function filterAircraftByType(data, filterType) {
     return true;
   });
 
-  return { aircraft: filtered };
+  const keptAcnos = new Set(filtered.map(ac => ac.acno));
+  const missingRoRi = (data.missing_ro_ri || []).filter(m => keptAcnos.has(m.acno));
+
+  return { ...data, aircraft: filtered, missing_ro_ri: missingRoRi };
 }

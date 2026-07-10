@@ -12,12 +12,9 @@
 <!-- 상단 설정 영역 -->
 <header id="settings-bar">
   <div class="settings-group">
-    <label for="start-date-input">시작일</label>
-    <input type="date" id="start-date-input" />
-  </div>
-  <div class="settings-group">
-    <label for="end-date-input">종료일</label>
-    <input type="date" id="end-date-input" />
+    <label for="query-date-input">조회일</label>
+    <span id="query-date-field"><input type="date" id="query-date-input" /></span>
+    <button id="query-date-free-btn" class="link-btn hidden" type="button">직접 입력</button>
   </div>
   <div class="settings-group">
     <label for="airline-select">항공사</label>
@@ -26,8 +23,8 @@
     </select>
   </div>
   <div class="settings-group">
-    <label>NAT</label>
-    <div id="nat-container" class="nat-multiselect"></div>
+    <label>TOF</label>
+    <div id="tof-container" class="tof-multiselect"></div>
   </div>
   <div class="settings-group">
     <label for="aircraft-filter">기재</label>
@@ -56,39 +53,40 @@
   <!-- 좌측 요약 패널 -->
   <aside id="summary-panel">
     <div class="panel-section">
-      <h3>가동률 분석</h3>
-      <div id="operation-rate-table"></div>
-    </div>
-    <div class="panel-section">
-      <h3>Ground Time 분석</h3>
-      <div class="gt-filter-controls">
-        <select id="gt-route-type">
-          <option value="domestic">국내선</option>
-          <option value="international">국제선</option>
+      <h3>정시율 분석</h3>
+      <div class="op-filter-controls">
+        <select id="ontime-date-filter">
+          <option value="all">전체</option>
         </select>
-        <select id="gt-grade-filter">
-          <option value="전체">전체</option>
-          <option value="A">A (소형)</option>
-          <option value="B">B (리저널)</option>
-          <option value="C">C (중형)</option>
-          <option value="D">D (대형)</option>
-          <option value="E">E (초대형)</option>
+        <select id="ontime-aircraft-filter">
+          <option value="all">전체</option>
+          <option value="icn">인천기재</option>
+          <option value="domestic">국내기재</option>
+        </select>
+        <select id="ontime-tof-filter">
+          <option value="all">전체</option>
+        </select>
+        <select id="ontime-nat-filter">
+          <option value="all">전체</option>
+        </select>
+        <select id="ontime-delay-threshold">
+          <option value="0">0분 초과</option>
+          <option value="5">5분 초과</option>
+          <option value="15" selected>15분 초과</option>
+          <option value="30">30분 초과</option>
+          <option value="60">60분 초과</option>
         </select>
       </div>
-      <div id="gt-histogram"></div>
-    </div>
-    <div class="panel-section">
-      <h3>노선별 BT 통계</h3>
-      <div class="route-search">
-        <input type="text" id="route-input" placeholder="예: ICN-GMP" />
-        <button id="route-search-btn" class="btn btn-sm">검색</button>
-      </div>
-      <div id="route-stats-table"></div>
+      <div id="ontime-table"></div>
     </div>
   </aside>
 
   <!-- 우측 바차트 영역 -->
   <main id="barchart-area">
+    <div id="ro-ri-warning" class="ro-ri-warning hidden">
+      <div class="ro-ri-warning-title"></div>
+      <ul class="ro-ri-warning-list"></ul>
+    </div>
     <div id="barchart-container">
       <svg id="barchart-svg"></svg>
     </div>
