@@ -27,7 +27,7 @@ let _dragUpHandler = null;
 let _wheelHandler = null;
 
 // 줌/스크롤 상태 (renderBarchart 재호출 시에도 유지 — 기번 재배정 후
-// refreshCharts()가 다시 그릴 때 사용자가 맞춰둔 배율/위치가 초기화되지 않도록 모듈 전역으로 보관)
+// refreshBarchartAndOntime()이 다시 그릴 때 사용자가 맞춰둔 배율/위치가 초기화되지 않도록 모듈 전역으로 보관)
 let _xZoom = 1;
 let _yZoom = 1;
 let _scrollY = 0;
@@ -35,7 +35,21 @@ let _xOffset = 0;
 
 function renderBarchart(data) {
   _currentData = data;
-  const aircraft = data.aircraft || [];
+  // CANCEL 행: 비운항 시나리오로 Acno=''가 된 실제 편이 있으면(data_processor.py의
+  // filter_for_barchart가 acno==''를 하나의 그룹으로 묶어 알파벳순 최상단에 반환) 그
+  // flights를 병합해 표시하고, 없으면 빈 껍데기 행만 자리를 마련해둔다. renderBarchart()는
+  // 패널 토글/이미지 내보내기 등에서 같은 data 객체로 반복 호출되므로, data.aircraft를
+  // 직접 변형(unshift)하지 않고 매번 새 배열을 만들어야 재호출 시 CANCEL 행이 중복
+  // 누적되지 않는다.
+  const realCancelGroup = (data.aircraft || []).find(a => a.acno === '');
+  const restAircraft = (data.aircraft || []).filter(a => a.acno !== '');
+  const aircraft = [
+    realCancelGroup
+      ? { acno: 'CANCEL', flights: realCancelGroup.flights, lane_count: realCancelGroup.lane_count,
+          connection_error: realCancelGroup.connection_error, isCancelRow: true }
+      : { acno: 'CANCEL', flights: [], lane_count: 1, connection_error: false, isCancelRow: true },
+    ...restAircraft
+  ];
   const tooltip = document.getElementById('tooltip');
 
   const container = document.getElementById('barchart-container');
@@ -325,7 +339,7 @@ function renderBarchart(data) {
       .attr('width', chartW - MARGIN.left - MARGIN.right)
       .attr('y', (d, i) => MARGIN.top + rowOffsets[i] - scrollY)
       .attr('height', (d, i) => rowHeights[i])
-      .attr('fill', (d, i) => i % 2 === 1 ? '#d9d9d9' : 'transparent');
+      .attr('fill', (d, i) => i === 0 ? '#fecaca' : (i - 1) % 2 === 1 ? '#d9d9d9' : 'transparent');
 
     // --- 행 구분선 ---
     rowLines.selectAll('line').data(acnoList).join('line')
@@ -344,8 +358,15 @@ function renderBarchart(data) {
       const yPos = MARGIN.top + rowOffsets[idx] - scrollY;
       if (yPos + rowH < MARGIN.top - 20 || yPos > viewH) return;
 
-      // Y축 라벨 영역 배경색 (교대 행)
-      if (idx % 2 === 1) {
+      // Y축 라벨 영역 배경색 (CANCEL 행은 옅은 붉은색, 나머지는 교대 행)
+      if (idx === 0) {
+        yAxisGroup.append('rect')
+          .attr('x', -MARGIN.left)
+          .attr('y', yPos)
+          .attr('width', MARGIN.left)
+          .attr('height', rowH)
+          .attr('fill', '#fecaca');
+      } else if ((idx - 1) % 2 === 1) {
         yAxisGroup.append('rect')
           .attr('x', -MARGIN.left)
           .attr('y', yPos)
@@ -354,7 +375,7 @@ function renderBarchart(data) {
           .attr('fill', '#d9d9d9');
       }
 
-      // 번호 + 기번 (좌측 정렬)
+      // 번호 + 기번 (좌측 정렬, CANCEL 행은 번호 없이 표시)
       yAxisGroup.append('text')
         .attr('x', -MARGIN.left + 4)
         .attr('y', yPos + rowH / 2)
@@ -363,7 +384,7 @@ function renderBarchart(data) {
         .attr('fill', ac && ac.connection_error ? '#ef4444' : '#374151')
         .attr('font-weight', ac && ac.connection_error ? '700' : '400')
         .attr('font-size', '11px')
-        .text(`${idx + 1} ${acno}`);
+        .text(idx === 0 ? 'CANCEL' : `${idx} ${acno}`);
 
       // 기종 등급 (우측 정렬)
       const grade = ac && ac.flights.length > 0 ? ac.flights[0].actype_grade : '';
@@ -469,6 +490,15 @@ function renderBarchart(data) {
               .attr('height', scaledBarH)
               .attr('rx', 3);
           }
+          if (fl.scenario_changed && !fl.connection_error) {
+            barGroup.append('rect')
+              .attr('class', 'bar-changed-outline')
+              .attr('x', outerLeft)
+              .attr('y', barY)
+              .attr('width', outerW)
+              .attr('height', scaledBarH)
+              .attr('rx', 3);
+          }
         } else {
           barRect = barGroup.append('rect')
             .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}`)
@@ -478,6 +508,16 @@ function renderBarchart(data) {
             .attr('height', scaledBarH)
             .attr('rx', 3)
             .style('cursor', 'grab');
+
+          if (fl.scenario_changed && !fl.connection_error) {
+            barGroup.append('rect')
+              .attr('class', 'bar-changed-outline')
+              .attr('x', x1)
+              .attr('y', barY)
+              .attr('width', barW)
+              .attr('height', scaledBarH)
+              .attr('rx', 3);
+          }
         }
 
         if (showText && barW >= MIN_TEXT_PX) {
@@ -567,32 +607,71 @@ function renderBarchart(data) {
           const gtText = fl.ground_time_before !== null ? `${fl.ground_time_before}분` : '-';
           const btText = fl.blocktime !== null && fl.blocktime !== undefined ? `${fl.blocktime}분` : '-';
           const dlaText = (v) => (v !== null && v !== undefined) ? `${v}분` : '-';
-          const stdDelayMin = (fl.std_kst && fl.ro_kst && new Date(fl.ro_kst) > new Date(fl.std_kst))
-            ? Math.round((new Date(fl.ro_kst) - new Date(fl.std_kst)) / 60000)
-            : null;
-          const stdDelayText = stdDelayMin !== null ? `${stdDelayMin}분` : '-';
+          const stdDelayText = (roIso) => {
+            if (!roIso || !fl.std_kst) return '-';
+            const ro = new Date(roIso), std = new Date(fl.std_kst);
+            if (ro <= std) return '-';
+            return `${Math.round((ro - std) / 60000)}분`;
+          };
+
+          // 기존/변경 비교 테이블은 변경 여부와 무관하게 항상 렌더링되므로(기존 행만 있어도
+          // 9열 표), tt-wide(넓은 max-width)도 changed 여부와 상관없이 항상 적용해야 한다.
+          // changed일 때만 적용하면 변경 없는 편(대다수)에서는 좁은 기본 max-width(240px) 위에
+          // 넓은 테이블이 그려져 배경 밖으로 열이 삐져나오는 문제가 있었다.
+          const changed = !!fl.scenario_changed;
+          tooltip.classList.add('tt-wide');
+
+          const compareRow = (label, acno, actype, roIso, riIso, cnx, dep, atc, extraClass) => `
+            <tr class="${extraClass || ''}">
+              <td class="tt-row-label">${label}</td>
+              <td>${acno || '-'}</td>
+              <td>${actype || '-'}</td>
+              <td>${formatKST(roIso)}</td>
+              <td>${formatKST(riIso)}</td>
+              <td>${stdDelayText(roIso)}</td>
+              <td>${dlaText(cnx)}</td>
+              <td>${dlaText(dep)}</td>
+              <td>${dlaText(atc)}</td>
+            </tr>`;
+
+          const existingRow = compareRow(
+            '기존', fl.acno_orig || ac.acno, fl.actype_orig || fl.actype,
+            fl.ro_kst_orig || fl.ro_kst, fl.ri_kst_orig || fl.ri_kst,
+            fl.cnx_dla_orig ?? fl.cnx_dla, fl.dep_dla, fl.atc_dla,
+          );
+          const changedRow = changed
+            ? compareRow(
+                '변경', ac.acno, fl.actype, fl.ro_kst, fl.ri_kst,
+                fl.cnx_dla, fl.dep_dla, fl.atc_dla, 'tt-changed-row',
+              )
+            : '';
+
           tooltip.classList.remove('hidden');
           tooltip.innerHTML = `
-            <div class="tt-title">${fl.fltno}</div>
-            <div class="tt-row"><span class="tt-label">기번</span><span>${ac.acno}</span></div>
-            <div class="tt-row"><span class="tt-label">출발</span><span>${fl.depstn}</span></div>
-            <div class="tt-row"><span class="tt-label">도착</span><span>${fl.arrstn}</span></div>
-            <div class="tt-row"><span class="tt-label">RO</span><span>${formatKST(fl.ro_kst)}</span></div>
-            <div class="tt-row"><span class="tt-label">RI</span><span>${formatKST(fl.ri_kst)}</span></div>
-            <div class="tt-row"><span class="tt-label">BT</span><span>${btText}</span></div>
-            <div class="tt-row"><span class="tt-label">GT</span><span>${gtText}</span></div>
-            <div class="tt-row"><span class="tt-label">기종</span><span>${fl.actype}</span></div>
-            <div class="tt-row"><span class="tt-label">상태</span><span>${fl.status}</span></div>
-            <div class="tt-row"><span class="tt-label">결항지연</span><span>${dlaText(fl.cnx_dla)}</span></div>
-            <div class="tt-row"><span class="tt-label">출발지연</span><span>${dlaText(fl.dep_dla)}</span></div>
-            <div class="tt-row"><span class="tt-label">관제지연</span><span>${dlaText(fl.atc_dla)}</span></div>
-            <div class="tt-row"><span class="tt-label">지연(RO-STD)</span><span>${stdDelayText}</span></div>
+            <div class="tt-title">${fl.fltno} (${fl.depstn}→${fl.arrstn})</div>
+            <div class="tt-row"><span class="tt-label">STD</span><span>${formatKST(fl.std_kst)}</span></div>
+            <div class="tt-row"><span class="tt-label">STA</span><span>${formatKST(fl.sta_kst)}</span></div>
             <div class="tt-row"><span class="tt-label">NAT</span><span>${fl.nat || '-'}</span></div>
             <div class="tt-row"><span class="tt-label">MTTT</span><span>${fl.mttt ?? '-'}</span></div>
+            <div class="tt-compare-wrap">
+              <table class="tt-compare-table">
+                <thead>
+                  <tr>
+                    <th></th><th>기번</th><th>기종</th><th>RO</th><th>RI</th>
+                    <th>지연시간</th><th>연결지연</th><th>출발지연</th><th>관제지연</th>
+                  </tr>
+                </thead>
+                <tbody>${existingRow}${changedRow}</tbody>
+              </table>
+            </div>
+            <div class="tt-row"><span class="tt-label">BT</span><span>${btText}</span></div>
+            <div class="tt-row"><span class="tt-label">GT</span><span>${gtText}</span></div>
+            <div class="tt-row"><span class="tt-label">상태</span><span>${fl.status}</span></div>
           `;
           positionTooltip(event, tooltip);
         }).on('mouseleave', () => {
           tooltip.classList.add('hidden');
+          tooltip.classList.remove('tt-wide');
         });
       });
     });
@@ -772,8 +851,11 @@ function renderBarchart(data) {
     dragState = null;
     if (!moved) return;
     if (targetRowIdx === null || targetRowIdx === sourceRowIdx) return;
-    const targetAcno = acnoList[targetRowIdx];
-    if (!targetAcno) return;
+    const targetAircraft = aircraft[targetRowIdx];
+    // CANCEL 행(맨 위, isCancelRow)으로 드롭한 경우 acnoList상 표시값은 'CANCEL'
+    // 문자열이지만, 실제로는 비운항 처리(Acno='')를 의미하므로 빈 문자열로 전달한다.
+    const targetAcno = targetAircraft.isCancelRow ? '' : targetAircraft.acno;
+    if (targetAcno === undefined || targetAcno === null) return;
     reassignAcno(fl.row_id, targetAcno);
   };
 
@@ -863,12 +945,13 @@ function exportBarchartAsJpeg(settle) {
 // 각 selector에 해당하는 요소가 현재 데이터에 없으면(예: 연결 오류 없음) fallback 값을 사용한다.
 function buildExportStyleText(liveSvg) {
   const rules = [
-    { selector: '.bar-navy', props: { fill: '#003580' } },
-    { selector: '.bar-cobalt', props: { fill: '#1a56c4' } },
-    { selector: '.bar-gray', props: { fill: '#4a4a52' } },
+    { selector: '.bar-navy', props: { fill: '#1d4ed8' } },
+    { selector: '.bar-cobalt', props: { fill: '#3b82f6' } },
+    { selector: '.bar-gray', props: { fill: '#6b7280' } },
     { selector: '.bar-error', props: { stroke: '#ef4444', 'stroke-width': '2.5px' } },
     { selector: '.bar-error-outline', props: { fill: 'none', stroke: '#ef4444', 'stroke-width': '2.5px' } },
-    { selector: '.bar-delay', props: { fill: '#dc2626' } },
+    { selector: '.bar-changed-outline', props: { fill: 'none', stroke: '#84cc16', 'stroke-width': '2.5px' } },
+    { selector: '.bar-delay', props: { fill: '#ef4444' } },
     { selector: '.bar-text', props: { fill: '#ffffff', 'font-size': '11px', 'font-weight': '600', 'text-anchor': 'middle', 'dominant-baseline': 'middle' } },
     { selector: '.airport-label', props: { fill: '#374151', 'font-size': '10px' } },
     { selector: '.gt-label', props: { 'font-size': '10px', 'text-anchor': 'middle' } },
@@ -954,6 +1037,10 @@ function positionTooltip(event, tooltip) {
   let top = event.clientY + 12;
   if (left + tw > window.innerWidth - 10) left = event.clientX - tw - 12;
   if (top + th > window.innerHeight - 10) top = event.clientY - th - 12;
+  // 창 폭보다 툴팁이 넓거나(작은 창) 마우스가 가장자리 가까이 있으면 반전만으로는
+  // 화면 밖으로 나갈 수 있으므로, 좌/우 뒤집기 후에도 항상 뷰포트 안쪽으로 고정한다.
+  left = Math.max(10, Math.min(left, window.innerWidth - tw - 10));
+  top = Math.max(10, Math.min(top, window.innerHeight - th - 10));
   tooltip.style.left = `${left}px`;
   tooltip.style.top = `${top}px`;
 }

@@ -74,7 +74,7 @@ function setQueryDateFreeInput(value) {
   input.type = 'date';
   input.id = 'query-date-input';
   input.value = value || '';
-  input.addEventListener('change', refreshCharts);
+  input.addEventListener('change', refreshBarchart);
   field.innerHTML = '';
   field.appendChild(input);
   document.getElementById('query-date-free-btn').classList.add('hidden');
@@ -92,7 +92,7 @@ function setQueryDateRestrictedSelect(dates, selectedValue) {
     select.appendChild(opt);
   });
   select.value = selectedValue;
-  select.addEventListener('change', refreshCharts);
+  select.addEventListener('change', refreshBarchart);
   field.innerHTML = '';
   field.appendChild(select);
   document.getElementById('query-date-free-btn').classList.remove('hidden');

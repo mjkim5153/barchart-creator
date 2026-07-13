@@ -145,6 +145,13 @@ body {
   gap: 12px;
 }
 
+.panel-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .panel-section h3 {
   font-size: 12px;
   font-weight: 700;
@@ -152,6 +159,7 @@ body {
   border-bottom: 1px solid #dde3ec;
   padding-bottom: 4px;
   margin-bottom: 6px;
+  flex-shrink: 0;
 }
 
 /* #9 통계 카드 */
@@ -191,6 +199,7 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .op-filter-controls select {
@@ -203,22 +212,50 @@ body {
   min-width: 90px;
 }
 
-/* 정시율 분석 테이블 */
-#ontime-table table {
+/* 정시율 분석 실적/시나리오 소제목 */
+/* 실적/시나리오 두 서브섹션이 .panel-section의 남은 세로 공간을 절반씩 나눠 갖고,
+   각자 내부(.ontime-table-wrap)에서 독립적으로 스크롤되도록 함 */
+.ontime-subsection {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ontime-subsection h4 {
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  margin: 6px 0 4px;
+  flex-shrink: 0;
+}
+
+/* 정시율 분석 테이블 (실적/시나리오 공통 서식) */
+.ontime-table-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ontime-table-wrap table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
-#ontime-table th {
+.ontime-table-wrap th {
   background: #f1f5f9;
   padding: 3px 4px;
   text-align: center;
   border: 1px solid #e2e8f0;
+  position: sticky;
+  top: 0;
 }
-#ontime-table td {
+.ontime-table-wrap td {
   padding: 3px 4px;
   border: 1px solid #e2e8f0;
   text-align: center;
+}
+.ontime-table-wrap tr.ontime-row-total td {
+  font-weight: 700;
 }
 
 /* ===== 바차트 영역 ===== */
@@ -268,12 +305,13 @@ body {
 }
 
 /* ===== BAR 색상 ===== */
-.bar-navy   { fill: #003580; }   /* 국내선 - 제주 노선 (네이비) */
-.bar-cobalt { fill: #1a56c4; }   /* 국내선 - 일반 (코발트 블루) */
-.bar-gray   { fill: #4a4a52; }   /* 국제선 (진한 회색) */
+.bar-navy   { fill: #1d4ed8; }   /* 국내선 - 제주 노선 (네이비) */
+.bar-cobalt { fill: #3b82f6; }   /* 국내선 - 일반 (코발트 블루) */
+.bar-gray   { fill: #6b7280; }   /* 국제선 (회색) */
 .bar-error  { stroke: #ef4444; stroke-width: 2.5px; }
-.bar-delay  { fill: #dc2626; }   /* 지연(STD~RO) 구간 */
+.bar-delay  { fill: #ef4444; }   /* 지연(STD~RO) 구간 */
 .bar-error-outline { fill: none; stroke: #ef4444; stroke-width: 2.5px; pointer-events: none; }
+.bar-changed-outline { fill: none; stroke: #84cc16; stroke-width: 2.5px; pointer-events: none; }  /* 연결/기번 정보가 원본과 달라진 편 */
 
 /* ===== STA(도착 예정시각) 마커 ===== */
 .sta-line {
@@ -380,11 +418,211 @@ body.dragging-acno {
 
 .tooltip .tt-label { color: #94a3b8; }
 
+.tooltip.tt-wide { max-width: 760px; }
+
+.tooltip .tt-compare-wrap {
+  /* 비교 테이블(9열)이 폰트 렌더링差이 등으로 tt-wide max-width를 살짝 넘는 경우에도
+     어두운 배경(.tooltip) 밖으로 열이 삐져나오지 않도록 항상 박스 안에서만 넘치게 한다 */
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.tooltip .tt-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.tooltip .tt-compare-table th,
+.tooltip .tt-compare-table td {
+  border: 1px solid rgba(148,163,184,.35);
+  padding: 2px 5px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.tooltip .tt-compare-table th {
+  color: #93c5fd;
+  font-weight: 600;
+  background: rgba(148,163,184,.12);
+}
+
+.tooltip .tt-compare-table td.tt-row-label {
+  color: #94a3b8;
+  text-align: left;
+  font-weight: 600;
+}
+
+.tooltip .tt-compare-table tr.tt-changed-row td { color: #fbbf24; }
+
 /* 데이터 출처 안내 문구 */
 .data-info-text {
   font-size: 10px;
   color: #94a3b8;
   margin-top: 6px;
   line-height: 1.4;
+}
+
+/* ===== 시나리오 모달 ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,23,42,.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.modal-box {
+  background: #fff;
+  width: 640px;
+  max-width: 92vw;
+  max-height: 86vh;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  background: #1a2638;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.modal-header h2 { font-size: 16px; margin: 0; }
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-tabs {
+  display: flex;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.modal-tab-btn {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.modal-tab-btn.active {
+  background: #fff;
+  color: #1e40af;
+  border-bottom: 2px solid #3b82f6;
+}
+
+.modal-tab-panel {
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.modal-help-text {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+#scenario-fltno-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.scenario-checkbox-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.scenario-checkbox-list label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scenario-checkbox-list label.hidden { display: none; }
+
+#scenario-pattern-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.modal-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.scenario-result {
+  margin-top: 10px;
+  font-size: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.scenario-result table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+
+.scenario-result th, .scenario-result td {
+  border: 1px solid #e2e8f0;
+  padding: 4px 6px;
+  font-size: 11px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.scenario-result .sr-applied { color: #16a34a; }
+.scenario-result .sr-skipped { color: #dc2626; }
+.scenario-result .sr-nochange { color: #64748b; }
+.scenario-result .sr-error { color: #dc2626; font-weight: 600; }
+
+.modal-footer {
+  border-top: 1px solid #e2e8f0;
+  padding: 10px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
 }
 

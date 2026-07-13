@@ -11,7 +11,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from data_processor import process_dataframe, filter_for_barchart, compute_ontime_records, get_actype_grade
+from data_processor import (
+    process_dataframe, filter_for_barchart, compute_ontime_records, get_actype_grade,
+    apply_flight_cancellation, apply_chain_reassignment, apply_scenario_delay_adjustments,
+)
 
 
 def _get_base_path():
@@ -69,6 +72,55 @@ app.mount("/static", StaticFiles(directory=str(BASE_PATH / "static")), name="sta
 
 # 인메모리 캐시
 _current_df: pd.DataFrame | None = None
+_current_ontime_cache: dict | None = None
+_original_df: pd.DataFrame | None = None  # 크롤링/업로드 직후 스냅샷 (시나리오 초기화용)
+_baseline_ontime_cache: dict | None = None  # _original_df 기준 정시율(실적) 캐시
+_scenario_chart_df: pd.DataFrame | None = None  # 연결 변경편 RO/RI 재계산 반영된 바차트 표출용 df
+
+
+def _rebuild_ontime_cache():
+    """_current_df 기준으로 정시율 레코드를 1회 계산해 캐싱.
+
+    compute_ontime_records()는 airline/tof/date와 무관하게 항상 동일한 결과를
+    반환하므로(필터는 프론트에서 처리), 데이터셋이 바뀌는 시점(업로드/크롤링/
+    기번 재배정)에만 재계산하고 /api/ontime GET은 캐시를 그대로 반환한다.
+
+    _current_df를 그대로 넘기지 않고 apply_scenario_delay_adjustments()로 재배정
+    캐스케이드(연결 변경편의 RO_KST/RI_KST 재계산)를 먼저 반영한 df를 넘긴다.
+    이걸 빠뜨리면 바차트 툴팁의 재계산된 지연시간과 정시율 표의 지연편수 집계가
+    서로 다른 RO 값을 기준으로 계산되어 어긋난다. _scenario_chart_df 전역 캐시를
+    재사용하지 않고 직접 재계산하는 이유는 호출 순서(_rebuild_scenario_chart_df가
+    아직 최신화되지 않았을 수 있음)에 의존하지 않기 위함이다.
+    """
+    global _current_ontime_cache
+    if _current_df is None:
+        _current_ontime_cache = None
+        return
+    adjusted_df = apply_scenario_delay_adjustments(_current_df, _original_df)
+    _current_ontime_cache = compute_ontime_records(adjusted_df)
+
+
+def _rebuild_baseline_ontime_cache():
+    """_original_df(크롤링/업로드 직후 스냅샷) 기준 정시율(실적) 레코드 캐싱.
+
+    _original_df는 시나리오 조작(비운항/재배정/드래그/초기화)으로 바뀌지 않으므로
+    _original_df가 실제로 새로 설정되는 시점(크롤링/업로드)에만 호출한다.
+    """
+    global _baseline_ontime_cache
+    _baseline_ontime_cache = compute_ontime_records(_original_df)
+
+
+def _rebuild_scenario_chart_df():
+    """연결(Acno)이 바뀐 편들의 RO/RI/연결지연을 재계산해 바차트 표출용 df를 캐싱.
+
+    _rebuild_ontime_cache()와 동일한 시점(업로드/크롤링/드래그재배정/시나리오
+    3종/초기화)에 호출한다. /api/barchart는 _current_df 대신 이 df를 사용한다.
+    """
+    global _scenario_chart_df
+    if _current_df is not None:
+        _scenario_chart_df = apply_scenario_delay_adjustments(_current_df, _original_df)
+    else:
+        _scenario_chart_df = None
 
 DATA_DIR = APP_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -105,10 +157,23 @@ class UpdateAcnoRequest(BaseModel):
     new_acno: str
 
 
+class CancelFlightsRequest(BaseModel):
+    fltnos: list[str]
+
+
+class ReassignPattern(BaseModel):
+    front_fltno: str
+    back_fltno: str
+
+
+class ReassignChainRequest(BaseModel):
+    patterns: list[ReassignPattern]
+
+
 @app.post("/api/crawl")
 async def crawl_data(req: CrawlRequest):
     """func_ubkais.process_flight_schedule() 호출 → 메모리 캐시"""
-    global _current_df
+    global _current_df, _original_df
     try:
         file_name = str(DATA_DIR / f"flight_schedule_{req.start_date}_{req.end_date}.xlsx")
         logger.info(f"크롤링 시작: {req.start_date} ~ {req.end_date}")
@@ -129,6 +194,10 @@ async def crawl_data(req: CrawlRequest):
             raise HTTPException(status_code=500, detail="데이터 수집 결과가 비어 있습니다. 서버에서 UBIKAIS API에 접근할 수 없을 수 있습니다.")
 
         _current_df = process_dataframe(df)
+        _original_df = _current_df.copy()
+        _rebuild_ontime_cache()
+        _rebuild_baseline_ontime_cache()
+        _rebuild_scenario_chart_df()
         logger.info(f"크롤링 완료: {len(_current_df)} rows")
         return {"status": "ok", "rows": len(_current_df)}
 
@@ -140,7 +209,7 @@ async def crawl_data(req: CrawlRequest):
 @app.post("/api/upload")
 async def upload_excel(file: UploadFile = File(...)):
     """엑셀 업로드 → 메모리 캐시"""
-    global _current_df
+    global _current_df, _original_df
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
@@ -167,6 +236,10 @@ async def upload_excel(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="D_OPER 컬럼은 Y 또는 빈칸만 허용합니다.")
 
         _current_df = process_dataframe(df)
+        _original_df = _current_df.copy()
+        _rebuild_ontime_cache()
+        _rebuild_baseline_ontime_cache()
+        _rebuild_scenario_chart_df()
         logger.info(f"업로드 완료: {len(_current_df)} rows")
 
         dates = []
@@ -199,7 +272,9 @@ async def get_metadata():
     if 'TOF' in _current_df.columns:
         tof_values = sorted(_current_df['TOF'].dropna().unique().tolist())
 
-    return {"airlines": airlines, "tof": tof_values}
+    fltnos = sorted(_current_df['Fltno'].dropna().astype(str).unique().tolist())
+
+    return {"airlines": airlines, "tof": tof_values, "fltnos": fltnos}
 
 
 @app.get("/api/barchart")
@@ -213,18 +288,27 @@ async def get_barchart(
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
     tof_list = [t.strip() for t in tof.split(",") if t.strip()] if tof else []
-    result = filter_for_barchart(_current_df, airline, tof_list, date)
+    chart_df = _scenario_chart_df if _scenario_chart_df is not None else _current_df
+    result = filter_for_barchart(chart_df, airline, tof_list, date)
     return JSONResponse(content=result)
 
 
 @app.get("/api/ontime")
 async def get_ontime():
-    """정시율 분석용 편 단위 레코드 리스트 반환 (필터는 전부 프론트에서 처리)"""
+    """정시율 분석용 편 단위 레코드 리스트 반환 (필터는 전부 프론트에서 처리)
+
+    airline/tof/date와 무관하게 결과가 항상 동일하므로, 업로드/크롤링/기번재배정
+    시점에 미리 계산해둔 캐시(_current_ontime_cache)를 그대로 반환한다.
+    - records: _current_df 기준(시나리오 - 비운항/재배정/드래그 등 모든 변경 반영)
+    - baseline_records: _original_df 기준(실적 - 크롤링/업로드 직후 원본, 변경 미반영)
+    """
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    result = compute_ontime_records(_current_df)
-    return JSONResponse(content=result)
+    return JSONResponse(content={
+        "records": (_current_ontime_cache or {}).get("records", []),
+        "baseline_records": (_baseline_ontime_cache or {}).get("records", []),
+    })
 
 
 @app.get("/api/template")
@@ -264,10 +348,35 @@ async def update_acno(req: UpdateAcnoRequest):
         raise HTTPException(status_code=404, detail=f"row_id {req.row_id}에 해당하는 행을 찾을 수 없습니다. 데이터가 갱신되었을 수 있습니다.")
 
     new_acno = req.new_acno.strip()
+    old_acno = str(_current_df.loc[req.row_id, 'Acno'])
+
+    if new_acno == '':
+        # 바차트 CANCEL 행으로 드롭한 경우: 기번 재배정이 아니라 비운항 처리.
+        # apply_flight_cancellation()과 동일하게 Acno/D_OPER만 비우고 Actype은 유지한다.
+        if old_acno == '':
+            return {"status": "ok", "changed": False, "old_acno": old_acno, "new_acno": "CANCEL"}
+
+        sch_date = _current_df.loc[req.row_id, 'Sch_date_KST']
+        fltno = _current_df.loc[req.row_id, 'Fltno']
+        pair_mask = (
+            (_current_df['Sch_date_KST'] == sch_date) &
+            (_current_df['Fltno'] == fltno) &
+            (_current_df['Status'] != 'CNL')
+        )
+        _current_df.loc[pair_mask, 'Acno'] = ''
+        _current_df.loc[pair_mask, 'D_OPER'] = ''
+        _rebuild_ontime_cache()
+        _rebuild_scenario_chart_df()
+
+        logger.info(f"드래그 비운항 처리: row_id={req.row_id} Fltno={fltno} {old_acno} -> CANCEL (대상행수={int(pair_mask.sum())})")
+        return {
+            "status": "ok", "changed": True,
+            "old_acno": old_acno, "new_acno": "CANCEL",
+        }
+
     if new_acno not in _current_df['Acno'].astype(str).values:
         raise HTTPException(status_code=400, detail=f"기번 '{new_acno}'이(가) 현재 데이터에 존재하지 않습니다.")
 
-    old_acno = str(_current_df.loc[req.row_id, 'Acno'])
     if old_acno == new_acno:
         return {"status": "ok", "changed": False, "old_acno": old_acno, "new_acno": new_acno}
 
@@ -284,6 +393,8 @@ async def update_acno(req: UpdateAcnoRequest):
     _current_df.loc[pair_mask, 'Acno'] = new_acno
     _current_df.loc[pair_mask, 'Actype'] = new_actype
     _current_df.loc[pair_mask, 'Actype_Grade'] = get_actype_grade(new_actype)
+    _rebuild_ontime_cache()
+    _rebuild_scenario_chart_df()
 
     logger.info(f"기번 재배정: row_id={req.row_id} {old_acno} -> {new_acno} (Actype={new_actype}, 대상행수={int(pair_mask.sum())})")
     return {
@@ -292,19 +403,62 @@ async def update_acno(req: UpdateAcnoRequest):
     }
 
 
+@app.post("/api/scenario/cancel-flights")
+async def scenario_cancel_flights(req: CancelFlightsRequest):
+    """비운항 시나리오: 선택 편명을 전체 로드 기간에서 일괄 비운항 처리(Acno/D_OPER 빈칸)"""
+    global _current_df
+    if _current_df is None:
+        raise HTTPException(status_code=404, detail="데이터 없음.")
+
+    report = apply_flight_cancellation(_current_df, req.fltnos)
+    _rebuild_ontime_cache()
+    _rebuild_scenario_chart_df()
+    logger.info(f"비운항 시나리오 적용: {report}")
+    return {"status": "ok", **report}
+
+
+@app.post("/api/scenario/reassign-chain")
+async def scenario_reassign_chain(req: ReassignChainRequest):
+    """스케줄 조정 시나리오: 앞편-뒤편 패턴을 순차 적용, 패턴별 적용/변경없음/스킵 날짜 리포트"""
+    global _current_df
+    if _current_df is None:
+        raise HTTPException(status_code=404, detail="데이터 없음.")
+
+    patterns = [(p.front_fltno, p.back_fltno) for p in req.patterns]
+    results = apply_chain_reassignment(_current_df, patterns)
+    _rebuild_ontime_cache()
+    _rebuild_scenario_chart_df()
+    logger.info(f"스케줄 조정 시나리오 적용: {len(results)}개 패턴")
+    return {"status": "ok", "results": results}
+
+
+@app.post("/api/scenario/reset")
+async def scenario_reset():
+    """시나리오 초기화: 크롤링/업로드 시점 원본 스냅샷으로 복원(드래그 재배정 포함 모든 변경 취소)"""
+    global _current_df
+    if _original_df is None:
+        raise HTTPException(status_code=404, detail="복원할 원본 데이터가 없습니다.")
+
+    _current_df = _original_df.copy()
+    _rebuild_ontime_cache()
+    _rebuild_scenario_chart_df()
+    logger.info("시나리오 초기화: 원본 스냅샷으로 복원")
+    return {"status": "ok", "rows": len(_current_df)}
+
+
 @app.get("/api/download")
 async def download_excel(airline: str = Query(default=""), tof: str = Query(default=""), date: str = Query(default="")):
     """3시트 엑셀 다운로드 (정시율분석/바차트/RAW)"""
     if _current_df is None:
         raise HTTPException(status_code=404, detail="데이터 없음.")
 
-    from data_processor import filter_for_barchart, compute_ontime_records, add_aircraft_type_columns
+    from data_processor import filter_for_barchart, add_aircraft_type_columns
 
     tof_list = [t.strip() for t in tof.split(",") if t.strip()] if tof else []
 
     # Sheet 1: 정시율분석 (지연기준 15분 고정, 필터 없이 전체 기준 날짜별 집계)
     ONTIME_DELAY_THRESHOLD = 15
-    ontime_records = compute_ontime_records(_current_df).get('records', [])
+    ontime_records = (_current_ontime_cache or {}).get('records', [])
     ontime_rows = []
     if ontime_records:
         ontime_df = pd.DataFrame(ontime_records)

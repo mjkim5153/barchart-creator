@@ -63,3 +63,38 @@ async function updateAcno(rowId, newAcno) {
   }
   return res.json();
 }
+
+async function applyCancelScenario(fltnos) {
+  const res = await fetch('/api/scenario/cancel-flights', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fltnos }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '비운항 시나리오 적용 실패');
+  }
+  return res.json();
+}
+
+async function applyReassignScenario(patterns) {
+  const res = await fetch('/api/scenario/reassign-chain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patterns }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '스케줄 조정 시나리오 적용 실패');
+  }
+  return res.json();
+}
+
+async function resetScenario() {
+  const res = await fetch('/api/scenario/reset', { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '시나리오 초기화 실패');
+  }
+  return res.json();
+}

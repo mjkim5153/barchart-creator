@@ -42,6 +42,7 @@
     <button id="download-btn" class="btn btn-secondary">엑셀 다운로드</button>
     <button id="export-jpeg-btn" class="btn btn-secondary">이미지 저장</button>
     <button id="panel-toggle-btn" class="btn btn-secondary">통계 패널 숨기기</button>
+    <button id="scenario-btn" class="btn btn-secondary">시나리오</button>
   </div>
   <div id="loading-spinner" class="spinner hidden"></div>
   <div id="status-msg" class="status-msg"></div>
@@ -77,7 +78,14 @@
           <option value="60">60분 초과</option>
         </select>
       </div>
-      <div id="ontime-table"></div>
+      <div class="ontime-subsection">
+        <h4>정시율 분석(실적)</h4>
+        <div id="ontime-table-actual" class="ontime-table-wrap"></div>
+      </div>
+      <div class="ontime-subsection">
+        <h4>정시율 분석(시나리오)</h4>
+        <div id="ontime-table-scenario" class="ontime-table-wrap"></div>
+      </div>
     </div>
   </aside>
 
@@ -95,10 +103,61 @@
 
 </div>
 
+<!-- 시나리오 모달 -->
+<div id="scenario-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>시나리오</h2>
+      <button id="scenario-modal-close" class="modal-close-btn" type="button">&times;</button>
+    </div>
+
+    <div class="modal-tabs">
+      <button class="modal-tab-btn active" data-tab="cancel" type="button">비운항 시나리오</button>
+      <button class="modal-tab-btn" data-tab="reassign" type="button">스케줄 조정 시나리오</button>
+    </div>
+
+    <div class="modal-tab-panel" data-tab-panel="cancel">
+      <p class="modal-help-text">
+        비운항 처리할 편명을 선택하세요. 현재 로드된 전체 기간의 모든 날짜에서
+        해당 편명의 기번(Acno)/D_OPER가 빈칸으로 바뀌어 바차트 상단 CANCEL 행으로
+        빠지고, 정시율 집계에서도 자동 제외됩니다. 특정 날짜에 그 편명이 없으면
+        (이미 결항/비운항) 조용히 건너뜁니다.
+      </p>
+      <input type="text" id="scenario-fltno-search" placeholder="편명 검색..." />
+      <div id="scenario-fltno-list" class="scenario-checkbox-list"></div>
+      <div class="modal-actions">
+        <button id="scenario-cancel-apply-btn" class="btn btn-primary">비운항 적용</button>
+      </div>
+      <div id="scenario-cancel-result" class="scenario-result"></div>
+    </div>
+
+    <div class="modal-tab-panel hidden" data-tab-panel="reassign">
+      <p class="modal-help-text">
+        한 줄에 하나씩 "앞편-뒤편" 형식으로 입력하세요. (예: 7C106-7C117)<br>
+        앞편의 기번은 고정되고, 뒤편과 뒤편이 속한 기번의 그날 운항 체인에서 뒤편
+        이후 모든 편이 앞편의 기번으로 변경됩니다. 현재 로드된 전체 기간의 모든
+        날짜에 적용을 시도하며, 앞/뒤편 중 하나라도 없는 날짜는 건너뜁니다
+        (비운항 처리된 편은 "없음"으로 취급됩니다 — 비운항 시나리오를 먼저 적용하세요).
+      </p>
+      <textarea id="scenario-pattern-input" rows="8" placeholder="7C106-7C117&#10;7C108-7C119"></textarea>
+      <div class="modal-actions">
+        <button id="scenario-reassign-apply-btn" class="btn btn-primary">스케줄 조정 적용</button>
+      </div>
+      <div id="scenario-reassign-result" class="scenario-result"></div>
+    </div>
+
+    <div class="modal-footer">
+      <button id="scenario-reset-btn" class="btn btn-secondary">시나리오 전체 초기화</button>
+      <span id="scenario-footer-msg" class="status-msg"></span>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/filters.js"></script>
 <script src="/static/js/barchart.js"></script>
 <script src="/static/js/summary.js"></script>
+<script src="/static/js/scenario.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>
