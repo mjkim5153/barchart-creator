@@ -16,6 +16,11 @@ CARGO_TOF = {'CGE', 'CGO', 'CGC'}
 # 대한항공(KAL) ICN 국제선 연결용 지선(피더) 공항 — 현재 KAL만 해당 확인됨, 향후 타사/타 공항 확인 시 확장
 KAL_FEEDER_AIRPORTS = {'PUS', 'TAE'}
 
+# 확보GT(=해당편 STD_KST - 직전편 RI_KST) 기준 국내선 출발지연(DEP_DLA) 자동 조정
+# (.claude/rules/secured_gt_dep_dla_rule.md 참고)
+SECURED_GT_THRESHOLD_MIN = 40   # 실제 Turn-Around Time 기준선
+SECURED_GT_DEP_DLA_STEP_MIN = 3  # 임계값 교차 시 DEP_DLA 조정폭(분)
+
 # #10 Actype 등급
 ACTYPE_GRADE = {}
 _grade_map = {
@@ -185,6 +190,24 @@ def _build_predecessor_map(df: pd.DataFrame) -> dict:
     return result
 
 
+def _pred_fltno_map(df: pd.DataFrame) -> dict:
+    """`_build_predecessor_map` 결과를 각 행의 '바로 앞에 연결된 편' Fltno로 변환한다.
+
+    반환: {row_index: Fltno(str)|None} — 체인의 첫 편(연결된 앞 편 없음)은 None.
+    """
+    pred_map = _build_predecessor_map(df)
+    fltno_col = df['Fltno'] if 'Fltno' in df.columns else None
+    result = {}
+    for idx, info in pred_map.items():
+        pred_idx = info.get('pred_idx')
+        if pred_idx is None or fltno_col is None:
+            result[idx] = None
+        else:
+            val = fltno_col.at[pred_idx]
+            result[idx] = str(val) if pd.notna(val) else None
+    return result
+
+
 def compute_scenario_delay_adjustments(current_df: pd.DataFrame, original_df: pd.DataFrame) -> dict:
     """연결(Acno)이 바뀐 편들의 실적 RO/RI/연결지연(CNX_DLA)을 캐스케이딩 재계산한다.
 
@@ -201,7 +224,14 @@ def compute_scenario_delay_adjustments(current_df: pd.DataFrame, original_df: pd
     (cascading) 반영한다. 연결 대상·시간이 원본과 동일하면 조정하지 않는다. STD/MTTT/직전RI/
     원본RO·RI 중 하나라도 없으면 그 편은 조정을 건너뛰고(원본 유지) 캐스케이드가 거기서 끊긴다.
 
-    반환: {row_index: {'ro_kst': Timestamp, 'ri_kst': Timestamp, 'cnx_dla': float}}
+    국내선(Domestic_Intl=='국내선') 한정으로, 확보GT(=STD - 직전편RI)가 SECURED_GT_THRESHOLD_MIN
+    (40분)을 베이스라인(원본) 대비 상/하향 교차하면 DEP_DLA를 SECURED_GT_DEP_DLA_STEP_MIN(3분)
+    만큼 가감한다(하한 0, 음수 불가). 이 가감분은 연결외지연성분에도 반영되어 RO/RI가 함께
+    이동한다 — 단, DEP_DLA가 0에서 클램프되면(예: 원본 DEP_DLA=0에서 -2 시도) 실제 적용된
+    차이(클램프 후 delta)만큼만 RO/RI가 이동해 표시값-실제값 불일치를 막는다
+    (.claude/rules/secured_gt_dep_dla_rule.md 참고).
+
+    반환: {row_index: {'ro_kst': Timestamp, 'ri_kst': Timestamp, 'cnx_dla': float, 'dep_dla': float}}
     (조정이 실제 적용된 행만 포함)
     """
     adjustments = {}
@@ -232,12 +262,14 @@ def compute_scenario_delay_adjustments(current_df: pd.DataFrame, original_df: pd
     ri_list = sv['RI_KST'].tolist()
     std_list = sv['STD_KST'].tolist()
     mttt_list = pd.to_numeric(sv['MTTT'], errors='coerce').tolist() if 'MTTT' in sv.columns else [np.nan] * len(sv)
+    domestic_list = sv['Domestic_Intl'].tolist() if 'Domestic_Intl' in sv.columns else [''] * len(sv)
     first_list = is_first_in_group.tolist()
 
     has_orig = original_df is not None
     orig_ro_col = original_df['RO_KST'] if has_orig else None
     orig_ri_col = original_df['RI_KST'] if has_orig else None
     orig_cnx_col = original_df['CNX_DLA'] if has_orig and 'CNX_DLA' in original_df.columns else None
+    orig_dep_col = original_df['DEP_DLA'] if has_orig and 'DEP_DLA' in original_df.columns else None
     orig_index = original_df.index if has_orig else None
 
     prev_idx = None
@@ -269,6 +301,8 @@ def compute_scenario_delay_adjustments(current_df: pd.DataFrame, original_df: pd
         orig_ri = orig_ri_col.at[idx]
         orig_cnx_raw = orig_cnx_col.at[idx] if orig_cnx_col is not None else np.nan
         orig_cnx = float(orig_cnx_raw) if pd.notna(orig_cnx_raw) else 0.0
+        orig_dep_raw = orig_dep_col.at[idx] if orig_dep_col is not None else np.nan
+        orig_dep_dla = float(orig_dep_raw) if pd.notna(orig_dep_raw) else np.nan
 
         if pd.isna(std) or pd.isna(mttt) or pd.isna(orig_ro) or pd.isna(orig_ri):
             # 계산에 필요한 값이 없으면 조정 불가 -> 원본 유지, 캐스케이드 단절
@@ -279,12 +313,35 @@ def compute_scenario_delay_adjustments(current_df: pd.DataFrame, original_df: pd
         available_slack_min = (std - prev_ri_effective).total_seconds() / 60 - float(mttt)
         new_cnx = max(0.0, -available_slack_min)
 
+        # 확보GT(신규) = STD - 직전편RI(현재 캐스케이드 반영값) = available_slack_min + mttt
+        new_secured_gt = available_slack_min + float(mttt)
+
+        dep_dla_delta = 0.0
+        domestic_val = domestic_list[i] if i < len(domestic_list) else ''
+        if (
+            str(domestic_val).strip() == '국내선'
+            and pred_ri_orig is not None
+            and pd.notna(orig_dep_dla)
+        ):
+            baseline_secured_gt = (std - pred_ri_orig).total_seconds() / 60
+            baseline_short = baseline_secured_gt < SECURED_GT_THRESHOLD_MIN
+            new_short = new_secured_gt < SECURED_GT_THRESHOLD_MIN
+            if baseline_short and not new_short:
+                dep_dla_delta = -SECURED_GT_DEP_DLA_STEP_MIN
+            elif (not baseline_short) and new_short:
+                dep_dla_delta = SECURED_GT_DEP_DLA_STEP_MIN
+
+        new_dep_dla = max(0.0, orig_dep_dla + dep_dla_delta) if pd.notna(orig_dep_dla) else np.nan
+        # DEP_DLA가 0에서 클램프되어 실제로는 delta가 전량 반영되지 못하는 경우, RO/RI 이동량도
+        # "실제 적용된 차이"만큼만 반영해야 DEP_DLA 표시값과 RO 이동량이 일치한다.
+        dep_dla_applied_delta = (new_dep_dla - orig_dep_dla) if pd.notna(orig_dep_dla) else 0.0
+
         # DEP_DLA/ATC_DLA 등 연결과 무관한 지연 성분 (원본 RO에서 STD·원본 연결지연을 뺀 나머지, 고정값으로 보존)
-        non_cnx_extra = orig_ro - std - pd.Timedelta(minutes=orig_cnx)
+        non_cnx_extra = orig_ro - std - pd.Timedelta(minutes=orig_cnx) + pd.Timedelta(minutes=dep_dla_applied_delta)
         new_ro = std + pd.Timedelta(minutes=new_cnx) + non_cnx_extra
         new_ri = new_ro + (orig_ri - orig_ro)  # 원본 블록타임(RI-RO) 보존
 
-        adjustments[idx] = {'ro_kst': new_ro, 'ri_kst': new_ri, 'cnx_dla': new_cnx}
+        adjustments[idx] = {'ro_kst': new_ro, 'ri_kst': new_ri, 'cnx_dla': new_cnx, 'dep_dla': new_dep_dla}
 
         prev_idx = idx
         prev_ri_effective = new_ri
@@ -305,7 +362,18 @@ def apply_scenario_delay_adjustments(current_df: pd.DataFrame, original_df) -> p
     df['_orig_ro_kst'] = pd.NaT
     df['_orig_ri_kst'] = pd.NaT
     df['_orig_cnx_dla'] = np.nan
+    df['_orig_dep_dla'] = np.nan
+    df['_orig_std_kst'] = pd.NaT
+    df['_orig_sta_kst'] = pd.NaT
+    df['_orig_planned_gt'] = np.nan
+    df['_pred_fltno'] = None
+    df['_orig_pred_fltno'] = None
     df['_scenario_changed'] = False
+
+    # 현재(재배정 반영 후, 지연 재계산 전) 기준 연결편 — compute_scenario_delay_adjustments가
+    # 내부에서 그룹핑에 쓰는 것과 동일한 Acno/정렬키 기준이라야 캐스케이드 판정과 일치한다.
+    cur_pred_map = _pred_fltno_map(df)
+    df['_pred_fltno'] = df.index.map(cur_pred_map)
 
     if original_df is None or original_df.empty:
         return df
@@ -319,12 +387,37 @@ def apply_scenario_delay_adjustments(current_df: pd.DataFrame, original_df) -> p
     df.loc[common_idx, '_orig_ro_kst'] = original_df.loc[common_idx, 'RO_KST']
     df.loc[common_idx, '_orig_ri_kst'] = original_df.loc[common_idx, 'RI_KST']
     df.loc[common_idx, '_orig_cnx_dla'] = original_df.loc[common_idx, 'CNX_DLA']
+    df.loc[common_idx, '_orig_dep_dla'] = original_df.loc[common_idx, 'DEP_DLA']
+    df.loc[common_idx, '_orig_std_kst'] = original_df.loc[common_idx, 'STD_KST']
+    df.loc[common_idx, '_orig_sta_kst'] = original_df.loc[common_idx, 'STA_KST']
+
+    orig_pred_full_map = _build_predecessor_map(original_df)
+    orig_std_col = original_df['STD_KST']
+    orig_sta_col = original_df['STA_KST']
+    # 원본 체인 기준 계획 GT(=이 편의 원본 STD - 원본 직전편의 원본 STA) — STD/STA 자체가
+    # 바뀌는 스케줄 변경 시나리오에서 툴팁에 "기존 계획GT"를 보여주기 위한 고정값. 현재
+    # 화면 표출 순서(재배정으로 바뀔 수 있음)가 아니라 항상 original_df의 체인 구조로 계산한다.
+    planned_gt_map = {}
+    for idx, info in orig_pred_full_map.items():
+        pred_idx = info.get('pred_idx')
+        if pred_idx is None:
+            continue
+        std_val = orig_std_col.at[idx]
+        sta_val = orig_sta_col.at[pred_idx]
+        if pd.notna(std_val) and pd.notna(sta_val):
+            planned_gt_map[idx] = (std_val - sta_val).total_seconds() / 60
+    if planned_gt_map:
+        df.loc[common_idx, '_orig_planned_gt'] = pd.Series(planned_gt_map).reindex(common_idx)
+
+    orig_pred_map = _pred_fltno_map(original_df)
+    df.loc[common_idx, '_orig_pred_fltno'] = pd.Series(orig_pred_map).reindex(common_idx)
 
     adjustments = compute_scenario_delay_adjustments(df, original_df)
     for idx, adj in adjustments.items():
         df.at[idx, 'RO_KST'] = adj['ro_kst']
         df.at[idx, 'RI_KST'] = adj['ri_kst']
         df.at[idx, 'CNX_DLA'] = adj['cnx_dla']
+        df.at[idx, 'DEP_DLA'] = adj['dep_dla']
 
     in_common = df.index.isin(common_idx)
     acno_diff = df['Acno'].astype(str) != df['_orig_acno'].astype(str)
@@ -332,8 +425,16 @@ def apply_scenario_delay_adjustments(current_df: pd.DataFrame, original_df) -> p
     ro_diff = ~_na_safe_equal(df['RO_KST'], df['_orig_ro_kst'])
     ri_diff = ~_na_safe_equal(df['RI_KST'], df['_orig_ri_kst'])
     cnx_diff = ~_na_safe_equal(df['CNX_DLA'], df['_orig_cnx_dla'])
+    dep_dla_diff = ~_na_safe_equal(df['DEP_DLA'], df['_orig_dep_dla'])
+    std_diff = ~_na_safe_equal(df['STD_KST'], df['_orig_std_kst'])
+    sta_diff = ~_na_safe_equal(df['STA_KST'], df['_orig_sta_kst'])
+    # 연결편 자체가 바뀌면(RO/RI/CNX_DLA 등 수치 결과가 우연히 동일하더라도) 변경으로 간주 —
+    # 슬랙이 충분해 지연에 영향이 없는 재배정도 "연결정보 변경"으로는 표시되어야 함
+    pred_diff = df['_pred_fltno'].astype(str) != df['_orig_pred_fltno'].astype(str)
 
-    df['_scenario_changed'] = (acno_diff | actype_diff | ro_diff | ri_diff | cnx_diff) & in_common
+    df['_scenario_changed'] = (
+        acno_diff | actype_diff | ro_diff | ri_diff | cnx_diff | dep_dla_diff | pred_diff | std_diff | sta_diff
+    ) & in_common
 
     return df
 
@@ -440,7 +541,13 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str
         ro_kst_orig_l = sv['_orig_ro_kst'].tolist()
         ri_kst_orig_l = sv['_orig_ri_kst'].tolist()
         cnx_dla_orig_l = sv['_orig_cnx_dla'].tolist()
+        dep_dla_orig_l = sv['_orig_dep_dla'].tolist()
+        std_kst_orig_l = sv['_orig_std_kst'].tolist()
+        sta_kst_orig_l = sv['_orig_sta_kst'].tolist()
+        planned_gt_orig_l = sv['_orig_planned_gt'].tolist()
         scenario_changed_l = sv['_scenario_changed'].tolist()
+        pred_fltno_l = sv['_pred_fltno'].tolist()
+        pred_fltno_orig_l = sv['_orig_pred_fltno'].tolist()
 
     result = []
     group_start = 0
@@ -483,26 +590,34 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str
             ri_kst = ri_kst_l[idx]
             fltno = str(fltno_l[idx])
 
-            # RO/RI 결측 시 STD/STA로 폴백하지 않고 경고 목록에 수집
+            # RO/RI 중 하나만 결측이면 STD/STA로 폴백하지 않고 경고 목록에 수집(바 미표출).
+            # 둘 다 결측이면 STD/STA로 폴백 표출하므로(바차트 렌더링 측) 경고 대상에서 제외.
             missing_parts = []
             if pd.isna(ro_kst):
                 missing_parts.append('RO')
             if pd.isna(ri_kst):
                 missing_parts.append('RI')
-            if missing_parts:
+            if missing_parts and len(missing_parts) < 2:
                 missing_ro_ri.append({
                     'acno': str(acno),
                     'fltno': fltno,
                     'missing': ','.join(missing_parts),
                 })
 
-            # Ground Time: 이전편 RI_KST(실적 In) ~ 해당편 RO_KST(실적 Out)
-            ground_time_before = None
+            # Ground Time 세분화: 계획 GT(STA_prev~STD)/확보 GT(RI_prev~STD)/실제 GT(RI_prev~RO)
+            ground_time_before = None  # 실제 GT (기존 키 유지)
+            planned_gt = None          # 계획 GT
+            secured_gt = None          # 확보 GT
             if not is_first_row:
                 prev_ri = ri_kst_l[idx - 1]
+                prev_sta = sta_kst_l[idx - 1]
+                std_kst = std_kst_l[idx]
                 if pd.notna(prev_ri) and pd.notna(ro_kst):
-                    gt_minutes = int((ro_kst - prev_ri).total_seconds() / 60)
-                    ground_time_before = gt_minutes
+                    ground_time_before = int((ro_kst - prev_ri).total_seconds() / 60)
+                if pd.notna(prev_sta) and pd.notna(std_kst):
+                    planned_gt = int((std_kst - prev_sta).total_seconds() / 60)
+                if pd.notna(prev_ri) and pd.notna(std_kst):
+                    secured_gt = int((std_kst - prev_ri).total_seconds() / 60)
 
             # 실적 블록타임: RI_KST - RO_KST (요약 영역의 계획 Blocktime과는 별개)
             actual_blocktime = None
@@ -518,10 +633,19 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str
                 ro_kst_orig = ro_kst_orig_l[idx]
                 ri_kst_orig = ri_kst_orig_l[idx]
                 cnx_dla_orig = cnx_dla_orig_l[idx]
+                dep_dla_orig = dep_dla_orig_l[idx]
+                std_kst_orig = std_kst_orig_l[idx]
+                sta_kst_orig = sta_kst_orig_l[idx]
+                planned_gt_orig_raw = planned_gt_orig_l[idx]
                 scenario_changed = bool(scenario_changed_l[idx])
+                pred_fltno = pred_fltno_l[idx]
+                pred_fltno_orig = pred_fltno_orig_l[idx]
             else:
-                acno_orig = actype_orig = ro_kst_orig = ri_kst_orig = cnx_dla_orig = None
+                acno_orig = actype_orig = ro_kst_orig = ri_kst_orig = cnx_dla_orig = dep_dla_orig = None
+                std_kst_orig = sta_kst_orig = pd.NaT
+                planned_gt_orig_raw = np.nan
                 scenario_changed = False
+                pred_fltno = pred_fltno_orig = None
 
             nat_val = nat_l[idx]
             mttt_val = mttt_l[idx]
@@ -546,6 +670,8 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str
                 'color': color,
                 'connection_error': connection_error,
                 'ground_time_before': ground_time_before,
+                'planned_gt': planned_gt,
+                'secured_gt': secured_gt,
                 'cnx_dla': _dla_value(cnx_dla_l[idx]),
                 'dep_dla': _dla_value(dep_dla_l[idx]),
                 'atc_dla': _dla_value(atc_dla_l[idx]),
@@ -555,7 +681,13 @@ def filter_for_barchart(df: pd.DataFrame, airline: str, tof_list: list, date_str
                 'ro_kst_orig': (ro_kst_orig.isoformat() if pd.notna(ro_kst_orig) else None),
                 'ri_kst_orig': (ri_kst_orig.isoformat() if pd.notna(ri_kst_orig) else None),
                 'cnx_dla_orig': _dla_value(cnx_dla_orig),
+                'dep_dla_orig': _dla_value(dep_dla_orig),
+                'std_kst_orig': (std_kst_orig.isoformat() if pd.notna(std_kst_orig) else None),
+                'sta_kst_orig': (sta_kst_orig.isoformat() if pd.notna(sta_kst_orig) else None),
+                'planned_gt_orig': (int(round(planned_gt_orig_raw)) if pd.notna(planned_gt_orig_raw) else None),
                 'scenario_changed': scenario_changed,
+                'pred_fltno': (str(pred_fltno) if pd.notna(pred_fltno) else None),
+                'pred_fltno_orig': (str(pred_fltno_orig) if pd.notna(pred_fltno_orig) else None),
             })
 
         result.append({

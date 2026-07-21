@@ -2,8 +2,22 @@
  * main.js — 앱 초기화 및 이벤트 연결
  */
 
-// 기본 날짜: 어제 (자유 입력 모드)
-(function setDefaultDates() {
+// 초기 조회일: 서버 부팅 시 NAS에서 자동 로드된 데이터가 있으면 그 기간의
+// 시작일로 설정(업로드 시와 동일하게 select 제한 모드) 후 바로 차트를 표출한다.
+// 자동 로드된 데이터가 없으면(NAS 미접속 등) 기존처럼 어제 날짜의 자유 입력으로 시작.
+(async function initQueryDate() {
+  try {
+    const meta = await fetchMetadata();
+    const dates = meta.dates || [];
+    if (dates.length > 0) {
+      setQueryDateRestrictedSelect(dates, dates[0]);
+      await loadChartsAndSummary();
+      hideLoading(`자동 로드된 데이터 표출 중 (시작일 ${dates[0]})`);
+      return;
+    }
+  } catch (e) {
+    // 자동 로드된 데이터 없음 — 기존 기본 동작으로 폴백
+  }
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yyyy = yesterday.getFullYear();
@@ -218,6 +232,18 @@ document.getElementById('download-btn').addEventListener('click', () => {
   if (tofList.length) params.set('tof', tofList.join(','));
   if (date) params.set('date', date);
   window.location.href = `/api/download?${params}`;
+});
+
+// 정시율 분석(실적/시나리오) 엑셀 다운로드 — 현재 선택된 5개 필터 그대로 반영
+document.getElementById('ontime-download-btn').addEventListener('click', () => {
+  const params = new URLSearchParams({
+    date: document.getElementById('ontime-date-filter').value,
+    aircraft: document.getElementById('ontime-aircraft-filter').value,
+    tof: document.getElementById('ontime-tof-filter').value,
+    nat: document.getElementById('ontime-nat-filter').value,
+    threshold: document.getElementById('ontime-delay-threshold').value,
+  });
+  window.location.href = `/api/download/ontime?${params}`;
 });
 
 // 바차트 이미지(JPEG) 저장

@@ -312,6 +312,7 @@ body {
 .bar-delay  { fill: #ef4444; }   /* 지연(STD~RO) 구간 */
 .bar-error-outline { fill: none; stroke: #ef4444; stroke-width: 2.5px; pointer-events: none; }
 .bar-changed-outline { fill: none; stroke: #84cc16; stroke-width: 2.5px; pointer-events: none; }  /* 연결/기번 정보가 원본과 달라진 편 */
+.bar-planned { fill-opacity: 0.55; stroke: #475569; stroke-width: 1.5px; stroke-dasharray: 4 2; }  /* RO/RI 둘 다 결측 → STD/STA 폴백 표출 */
 
 /* ===== STA(도착 예정시각) 마커 ===== */
 .sta-line {
@@ -378,6 +379,11 @@ body.dragging-acno {
   text-anchor: middle;
 }
 
+.gt-label-planned {
+  font-style: italic;
+  opacity: 0.75;
+}
+
 /* 그리드 선 */
 .x-grid-major line { stroke: #9ca3af; stroke-width: 1px; }
 .x-grid-minor line { stroke: #e5e7eb; stroke-width: .5px; }
@@ -418,7 +424,7 @@ body.dragging-acno {
 
 .tooltip .tt-label { color: #94a3b8; }
 
-.tooltip.tt-wide { max-width: 760px; }
+.tooltip.tt-wide { max-width: 840px; }
 
 .tooltip .tt-compare-wrap {
   /* 비교 테이블(9열)이 폰트 렌더링差이 등으로 tt-wide max-width를 살짝 넘는 경우에도
@@ -454,6 +460,10 @@ body.dragging-acno {
 }
 
 .tooltip .tt-compare-table tr.tt-changed-row td { color: #fbbf24; }
+
+/* STD/STA/계획GT 등 단일 tt-row 안에서 원본 대비 변경값 표시(스케줄 변경 시나리오) */
+.tooltip .tt-new-val { color: #fbbf24; font-weight: 600; }
+.tooltip .tt-orig-val { color: #64748b; font-size: 10px; margin-left: 4px; }
 
 /* 데이터 출처 안내 문구 */
 .data-info-text {
@@ -513,7 +523,7 @@ body.dragging-acno {
   flex-shrink: 0;
 }
 
-.modal-tab-btn {
+.modal-tab-btn, .sl-tab-btn {
   flex: 1;
   padding: 10px;
   border: none;
@@ -524,13 +534,13 @@ body.dragging-acno {
   color: #64748b;
 }
 
-.modal-tab-btn.active {
+.modal-tab-btn.active, .sl-tab-btn.active {
   background: #fff;
   color: #1e40af;
   border-bottom: 2px solid #3b82f6;
 }
 
-.modal-tab-panel {
+.modal-tab-panel, .sl-tab-panel {
   padding: 16px 18px;
   overflow-y: auto;
 }
@@ -625,4 +635,32 @@ body.dragging-acno {
   align-items: center;
   flex-shrink: 0;
 }
+
+/* ===== 저장/불러오기 모달 ===== */
+#scenario-save-name-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  margin-bottom: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.sl-save-empty {
+  font-size: 12px;
+  color: #64748b;
+  padding: 10px 0;
+}
+
+.sl-save-list table { width: 100%; border-collapse: collapse; }
+.sl-save-list th, .sl-save-list td {
+  border: 1px solid #e2e8f0;
+  padding: 5px 6px;
+  font-size: 11px;
+  text-align: left;
+  vertical-align: middle;
+}
+.sl-save-list td.sl-actions { white-space: nowrap; }
+.sl-save-list td.sl-actions button { margin-right: 4px; }
 

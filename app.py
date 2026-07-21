@@ -1,6 +1,11 @@
 import os
 import io
 import sys
+import json
+import pickle
+import re
+import sqlite3
+import uuid
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -125,6 +130,15 @@ def _rebuild_scenario_chart_df():
 DATA_DIR = APP_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
+SCENARIO_DIR = DATA_DIR / "scenarios"
+SCENARIO_DIR.mkdir(exist_ok=True)
+
+_SCENARIO_ID_RE = re.compile(r'^[0-9a-f]{32}$')
+
+
+def _scenario_paths(scenario_id: str):
+    return SCENARIO_DIR / f"{scenario_id}.pkl", SCENARIO_DIR / f"{scenario_id}.json"
+
 ICAO_CODES = [
     "RKSI",  # ICN 인천
     "RKSS",  # GMP 김포
@@ -140,6 +154,92 @@ ICAO_CODES = [
     "RKPS",  # RSU 여수
     "RKJK",  # KUV 군산
 ]
+
+
+# 부팅 시 자동 로드 대상 (NAS 공유폴더, Synology)
+NAS_DATA_DIR = Path(r"\\10.11.25.20\시스템 공용폴더")
+
+
+def _find_latest_nas_sqlite() -> Path | None:
+    """NAS 공유폴더에서 가장 최근에 갱신된 upload_template_*.sqlite 파일 탐색"""
+    if not NAS_DATA_DIR.exists():
+        return None
+    files = sorted(
+        NAS_DATA_DIR.glob("upload_template_*.sqlite"),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    return files[0] if files else None
+
+
+def _process_upload_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """엑셀 업로드 및 NAS 자동 로드 공통 검증/가공 로직
+
+    /api/upload과 startup 자동 로드가 동일한 필수 컬럼(NAT/MTTT/D_OPER) 검증을
+    거치도록 공유한다. 검증 실패 시 ValueError를 던지며, 호출부에서 각자 상황에
+    맞게 처리한다(API는 HTTPException 400, startup은 경고 로그 후 건너뜀).
+    """
+    df = df.copy()
+
+    if 'NAT' not in df.columns:
+        raise ValueError("필수 컬럼 누락: NAT")
+    if df['NAT'].isna().any() or (df['NAT'].astype(str).str.strip() == '').any():
+        raise ValueError("NAT 컬럼에 빈 값이 있는 행이 있습니다.")
+
+    if 'MTTT' not in df.columns:
+        raise ValueError("필수 컬럼 누락: MTTT")
+    mttt_blank = df['MTTT'].isna()
+    if mttt_blank.any():
+        # TOF 기준 자동 계산: TOF=I → 60분 / TOF=D → 같은 Sch_date_KST+Acno 체인에서
+        # STD_UTC 기준 직전편의 TOF가 I면 60분, 아니면(직전편 없음 포함) 35분
+        if 'TOF' not in df.columns or not df.loc[mttt_blank, 'TOF'].isin(['D', 'I']).all():
+            raise ValueError("MTTT 컬럼에 빈 값이 있는 행이 있습니다.")
+        order = df[['Sch_date_KST', 'Acno', 'STD_UTC', 'TOF']].sort_values(['Sch_date_KST', 'Acno', 'STD_UTC'])
+        prev_tof = order.groupby(['Sch_date_KST', 'Acno'])['TOF'].shift(1).reindex(df.index)
+        auto_mttt = pd.Series(35, index=df.index)
+        auto_mttt[(df['TOF'] == 'I') | (prev_tof == 'I')] = 60
+        df.loc[mttt_blank, 'MTTT'] = auto_mttt[mttt_blank]
+    try:
+        df['MTTT'] = df['MTTT'].astype(int)
+    except (ValueError, TypeError):
+        raise ValueError("MTTT 컬럼은 정수만 허용합니다.")
+
+    if 'D_OPER' not in df.columns:
+        raise ValueError("필수 컬럼 누락: D_OPER")
+    d_oper_str = df['D_OPER'].astype(str).str.strip()
+    d_oper_valid = df['D_OPER'].isna() | (d_oper_str == '') | (d_oper_str == 'Y')
+    if not d_oper_valid.all():
+        raise ValueError("D_OPER 컬럼은 Y 또는 빈칸만 허용합니다.")
+
+    return process_dataframe(df)
+
+
+@app.on_event("startup")
+async def _load_nas_data_on_startup():
+    """서버 부팅 시 NAS 공유폴더의 sqlite 데이터를 자동 로드(있으면)
+
+    NAS 미접속 등으로 실패해도 서버 기동 자체는 막지 않고 경고 로그만 남긴다 —
+    이 경우 기존과 동일하게 화면에서 크롤링/업로드로 수동 진행 가능.
+    """
+    global _current_df, _original_df
+    try:
+        path = _find_latest_nas_sqlite()
+        if path is None:
+            logger.info(f"NAS 자동 로드 대상 없음: {NAS_DATA_DIR}")
+            return
+        conn = sqlite3.connect(str(path))
+        try:
+            df = pd.read_sql("SELECT * FROM flights", conn)
+        finally:
+            conn.close()
+
+        _current_df = _process_upload_dataframe(df)
+        _original_df = _current_df.copy()
+        _rebuild_ontime_cache()
+        _rebuild_baseline_ontime_cache()
+        _rebuild_scenario_chart_df()
+        logger.info(f"NAS 자동 로드 완료: {path.name} ({len(_current_df)} rows)")
+    except Exception as e:
+        logger.warning(f"NAS 자동 로드 실패(건너뜀): {e}")
 
 
 @app.get("/")
@@ -168,6 +268,11 @@ class ReassignPattern(BaseModel):
 
 class ReassignChainRequest(BaseModel):
     patterns: list[ReassignPattern]
+
+
+class ScenarioSaveRequest(BaseModel):
+    name: str
+    filters: dict | None = None
 
 
 @app.post("/api/crawl")
@@ -214,28 +319,10 @@ async def upload_excel(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
 
-        if 'NAT' not in df.columns:
-            raise HTTPException(status_code=400, detail="필수 컬럼 누락: NAT")
-        if df['NAT'].isna().any() or (df['NAT'].astype(str).str.strip() == '').any():
-            raise HTTPException(status_code=400, detail="NAT 컬럼에 빈 값이 있는 행이 있습니다.")
-
-        if 'MTTT' not in df.columns:
-            raise HTTPException(status_code=400, detail="필수 컬럼 누락: MTTT")
-        if df['MTTT'].isna().any():
-            raise HTTPException(status_code=400, detail="MTTT 컬럼에 빈 값이 있는 행이 있습니다.")
         try:
-            df['MTTT'] = df['MTTT'].astype(int)
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="MTTT 컬럼은 정수만 허용합니다.")
-
-        if 'D_OPER' not in df.columns:
-            raise HTTPException(status_code=400, detail="필수 컬럼 누락: D_OPER")
-        d_oper_str = df['D_OPER'].astype(str).str.strip()
-        d_oper_valid = df['D_OPER'].isna() | (d_oper_str == '') | (d_oper_str == 'Y')
-        if not d_oper_valid.all():
-            raise HTTPException(status_code=400, detail="D_OPER 컬럼은 Y 또는 빈칸만 허용합니다.")
-
-        _current_df = process_dataframe(df)
+            _current_df = _process_upload_dataframe(df)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         _original_df = _current_df.copy()
         _rebuild_ontime_cache()
         _rebuild_baseline_ontime_cache()
@@ -274,7 +361,13 @@ async def get_metadata():
 
     fltnos = sorted(_current_df['Fltno'].dropna().astype(str).unique().tolist())
 
-    return {"airlines": airlines, "tof": tof_values, "fltnos": fltnos}
+    dates = []
+    if 'Sch_date_KST' in _current_df.columns:
+        dates = sorted(
+            pd.to_datetime(_current_df['Sch_date_KST']).dt.date.dropna().unique().tolist()
+        )
+
+    return {"airlines": airlines, "tof": tof_values, "fltnos": fltnos, "dates": [str(d) for d in dates]}
 
 
 @app.get("/api/barchart")
@@ -393,6 +486,11 @@ async def update_acno(req: UpdateAcnoRequest):
     _current_df.loc[pair_mask, 'Acno'] = new_acno
     _current_df.loc[pair_mask, 'Actype'] = new_actype
     _current_df.loc[pair_mask, 'Actype_Grade'] = get_actype_grade(new_actype)
+    if old_acno == '' and _original_df is not None:
+        # CANCEL 행(Acno='')에서 실제 기번으로 되돌리는 경우: 비운항 처리 시 지워둔
+        # D_OPER(app.py:367)를 원본(_original_df) 값으로 복구해야 정시율 운항편수
+        # 집계(compute_ontime_records의 D_OPER=='Y' 조건)에 다시 포함된다.
+        _current_df.loc[pair_mask, 'D_OPER'] = _original_df.loc[pair_mask, 'D_OPER']
     _rebuild_ontime_cache()
     _rebuild_scenario_chart_df()
 
@@ -444,6 +542,200 @@ async def scenario_reset():
     _rebuild_scenario_chart_df()
     logger.info("시나리오 초기화: 원본 스냅샷으로 복원")
     return {"status": "ok", "rows": len(_current_df)}
+
+
+@app.post("/api/scenario-save")
+async def save_scenario(req: ScenarioSaveRequest):
+    """현재 작업 상태(_original_df/_current_df)를 이름 붙여 로컬 파일(data/scenarios/)로 저장.
+
+    _original_df를 그대로 함께 저장하므로, 이 저장을 나중에 불러와도 정시율 분석(실적)은
+    시나리오 조작과 무관하게 항상 최초 업로드/크롤링 시점 원본을 기준으로 유지된다.
+    """
+    if _current_df is None or _original_df is None:
+        raise HTTPException(status_code=404, detail="저장할 데이터가 없습니다.")
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+
+    scenario_id = uuid.uuid4().hex
+    pkl_path, json_path = _scenario_paths(scenario_id)
+
+    saved_at = datetime.now().isoformat(timespec='seconds')
+    rows = len(_current_df)
+    date_range = []
+    if 'Sch_date_KST' in _current_df.columns:
+        dates = pd.to_datetime(_current_df['Sch_date_KST']).dt.date.dropna().unique().tolist()
+        if dates:
+            date_range = [str(min(dates)), str(max(dates))]
+
+    with open(pkl_path, 'wb') as f:
+        pickle.dump({'original_df': _original_df, 'current_df': _current_df}, f)
+
+    meta = {
+        'name': name, 'saved_at': saved_at, 'rows': rows,
+        'date_range': date_range, 'filters': req.filters or {},
+    }
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+    logger.info(f"시나리오 저장: id={scenario_id} name={name} rows={rows}")
+    return {"id": scenario_id, "name": name, "saved_at": saved_at, "rows": rows}
+
+
+@app.get("/api/scenario-save/list")
+async def list_scenario_saves():
+    """저장된 시나리오 목록(저장시각 최신순). json 메타데이터만 읽어 목록을 빠르게 반환."""
+    items = []
+    for json_path in SCENARIO_DIR.glob("*.json"):
+        scenario_id = json_path.stem
+        pkl_path = SCENARIO_DIR / f"{scenario_id}.pkl"
+        if not pkl_path.exists():
+            continue
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        items.append({
+            "id": scenario_id,
+            "name": meta.get("name", ""),
+            "saved_at": meta.get("saved_at", ""),
+            "rows": meta.get("rows", 0),
+            "date_range": meta.get("date_range", []),
+        })
+    items.sort(key=lambda x: x["saved_at"], reverse=True)
+    return items
+
+
+@app.post("/api/scenario-save/{scenario_id}/load")
+async def load_scenario_save(scenario_id: str):
+    """저장된 시나리오 불러오기: _original_df/_current_df를 저장 시점 스냅샷으로 교체."""
+    global _current_df, _original_df
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise HTTPException(status_code=400, detail="잘못된 저장 ID입니다.")
+
+    pkl_path, json_path = _scenario_paths(scenario_id)
+    if not pkl_path.exists():
+        raise HTTPException(status_code=404, detail="저장된 시나리오를 찾을 수 없습니다.")
+
+    with open(pkl_path, 'rb') as f:
+        snapshot = pickle.load(f)
+    _original_df = snapshot['original_df']
+    _current_df = snapshot['current_df']
+
+    _rebuild_ontime_cache()
+    _rebuild_baseline_ontime_cache()
+    _rebuild_scenario_chart_df()
+
+    filters = {}
+    if json_path.exists():
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                filters = json.load(f).get('filters') or {}
+        except (OSError, ValueError):
+            filters = {}
+
+    dates = []
+    if 'Sch_date_KST' in _current_df.columns:
+        dates = sorted(
+            pd.to_datetime(_current_df['Sch_date_KST']).dt.date.dropna().unique().tolist()
+        )
+
+    logger.info(f"시나리오 불러오기: id={scenario_id} rows={len(_current_df)}")
+    return {
+        "status": "ok", "rows": len(_current_df),
+        "dates": [str(d) for d in dates], "filters": filters,
+    }
+
+
+@app.delete("/api/scenario-save/{scenario_id}")
+async def delete_scenario_save(scenario_id: str):
+    """저장된 시나리오 삭제 (pkl+json 파일 제거)"""
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise HTTPException(status_code=400, detail="잘못된 저장 ID입니다.")
+
+    pkl_path, json_path = _scenario_paths(scenario_id)
+    if not pkl_path.exists() and not json_path.exists():
+        raise HTTPException(status_code=404, detail="저장된 시나리오를 찾을 수 없습니다.")
+
+    pkl_path.unlink(missing_ok=True)
+    json_path.unlink(missing_ok=True)
+    logger.info(f"시나리오 삭제: id={scenario_id}")
+    return {"status": "ok"}
+
+
+def _aggregate_ontime_table(records: list, date_filter: str, aircraft_filter: str, tof_filter: str, nat_filter: str, threshold: int) -> list:
+    """summary.js::_renderOntimeTableInto와 동일한 필터/집계 로직 (엑셀 다운로드용 백엔드 미러)."""
+    filtered = [
+        r for r in records
+        if (date_filter == 'all' or r['date'] == date_filter)
+        and (aircraft_filter != 'icn' or r['icn'])
+        and (aircraft_filter != 'domestic' or r['domestic'])
+        and (tof_filter == 'all' or r['tof'] == tof_filter)
+        and (nat_filter == 'all' or r['nat'] == nat_filter)
+    ]
+    if not filtered:
+        return []
+
+    by_date: dict = {}
+    for r in filtered:
+        d = by_date.setdefault(r['date'], {'total': 0, 'delayed': 0})
+        d['total'] += 1
+        if r['delay_min'] is not None and r['delay_min'] > threshold:
+            d['delayed'] += 1
+
+    rows = [
+        {
+            '날짜': date_val,
+            '운항편수': v['total'],
+            '지연편수': v['delayed'],
+            '정시율(%)': round((1 - v['delayed'] / v['total']) * 100, 1) if v['total'] else 0.0,
+        }
+        for date_val, v in sorted(by_date.items())
+    ]
+
+    if date_filter == 'all' and rows:
+        total = len(filtered)
+        delayed = sum(1 for r in filtered if r['delay_min'] is not None and r['delay_min'] > threshold)
+        rows.insert(0, {
+            '날짜': '누적',
+            '운항편수': total,
+            '지연편수': delayed,
+            '정시율(%)': round((1 - delayed / total) * 100, 1) if total else 0.0,
+        })
+
+    return rows
+
+
+@app.get("/api/download/ontime")
+async def download_ontime_excel(
+    date: str = Query(default="all"),
+    aircraft: str = Query(default="all"),
+    tof: str = Query(default="all"),
+    nat: str = Query(default="all"),
+    threshold: int = Query(default=15),
+):
+    """정시율 분석(실적/시나리오) 표를 현재 UI 필터 그대로 반영해 하나의 엑셀(2시트)로 다운로드"""
+    actual_records = (_baseline_ontime_cache or {}).get('records', [])
+    scenario_records = (_current_ontime_cache or {}).get('records', [])
+    if not actual_records and not scenario_records:
+        raise HTTPException(status_code=404, detail="데이터 없음.")
+
+    actual_rows = _aggregate_ontime_table(actual_records, date, aircraft, tof, nat, threshold)
+    scenario_rows = _aggregate_ontime_table(scenario_records, date, aircraft, tof, nat, threshold)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        (pd.DataFrame(actual_rows) if actual_rows else pd.DataFrame()).to_excel(writer, sheet_name='정시율_실적', index=False)
+        (pd.DataFrame(scenario_rows) if scenario_rows else pd.DataFrame()).to_excel(writer, sheet_name='정시율_시나리오', index=False)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename=ontime_analysis.xlsx'}
+    )
 
 
 @app.get("/api/download")
@@ -522,6 +814,6 @@ if __name__ == "__main__":
         webbrowser.open("http://127.0.0.1:8000")
 
     threading.Thread(target=_open_browser, daemon=True).start()
-    print("서버 시작: http://127.0.0.1:8000")
+    print("서버 시작: http://127.0.0.1:8000 (같은 Wi-Fi 내 다른 PC는 이 PC의 IP로 접속 가능)")
     print("종료하려면 이 창을 닫거나 Ctrl+C를 누르세요.")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

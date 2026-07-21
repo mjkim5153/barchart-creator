@@ -43,6 +43,7 @@
     <button id="export-jpeg-btn" class="btn btn-secondary">이미지 저장</button>
     <button id="panel-toggle-btn" class="btn btn-secondary">통계 패널 숨기기</button>
     <button id="scenario-btn" class="btn btn-secondary">시나리오</button>
+    <button id="save-load-btn" class="btn btn-secondary">저장/불러오기</button>
   </div>
   <div id="loading-spinner" class="spinner hidden"></div>
   <div id="status-msg" class="status-msg"></div>
@@ -77,6 +78,7 @@
           <option value="30">30분 초과</option>
           <option value="60">60분 초과</option>
         </select>
+        <button id="ontime-download-btn" type="button" class="btn-sm">정시율 엑셀 다운로드</button>
       </div>
       <div class="ontime-subsection">
         <h4>정시율 분석(실적)</h4>
@@ -153,11 +155,48 @@
   </div>
 </div>
 
+<!-- 저장/불러오기 모달 -->
+<div id="save-load-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>저장/불러오기</h2>
+      <button id="save-load-modal-close" class="modal-close-btn" type="button">&times;</button>
+    </div>
+
+    <div class="modal-tabs">
+      <button class="sl-tab-btn active" data-sl-tab="save" type="button">저장</button>
+      <button class="sl-tab-btn" data-sl-tab="load" type="button">불러오기</button>
+    </div>
+
+    <div class="sl-tab-panel" data-sl-tab-panel="save">
+      <p class="modal-help-text">
+        현재 바차트/시나리오 조작 상태에 이름을 붙여 저장합니다. 나중에 "불러오기" 탭에서
+        다시 불러와 이어서 작업할 수 있습니다. 정시율 분석(실적)은 저장/불러오기와 무관하게
+        항상 최초 업로드/크롤링 시점의 원본 데이터를 기준으로 유지됩니다.
+      </p>
+      <input type="text" id="scenario-save-name-input" placeholder="저장 이름 입력..." />
+      <div class="modal-actions">
+        <button id="scenario-save-apply-btn" class="btn btn-primary">저장</button>
+      </div>
+      <div id="scenario-save-result" class="scenario-result"></div>
+    </div>
+
+    <div class="sl-tab-panel hidden" data-sl-tab-panel="load">
+      <p class="modal-help-text">
+        저장된 목록에서 불러올 항목을 선택하세요. 불러오면 현재 화면의 바차트/시나리오
+        상태가 저장 시점으로 교체됩니다.
+      </p>
+      <div id="scenario-save-list" class="sl-save-list"></div>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/filters.js"></script>
 <script src="/static/js/barchart.js"></script>
 <script src="/static/js/summary.js"></script>
 <script src="/static/js/scenario.js"></script>
+<script src="/static/js/saveload.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>

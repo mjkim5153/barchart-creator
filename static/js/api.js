@@ -98,3 +98,40 @@ async function resetScenario() {
   }
   return res.json();
 }
+
+async function saveScenario(name, filters) {
+  const res = await fetch('/api/scenario-save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, filters }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '시나리오 저장 실패');
+  }
+  return res.json();
+}
+
+async function fetchScenarioSaves() {
+  const res = await fetch('/api/scenario-save/list');
+  if (!res.ok) throw new Error('저장 목록 로드 실패');
+  return res.json();
+}
+
+async function loadScenarioSave(id) {
+  const res = await fetch(`/api/scenario-save/${id}/load`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '시나리오 불러오기 실패');
+  }
+  return res.json();
+}
+
+async function deleteScenarioSave(id) {
+  const res = await fetch(`/api/scenario-save/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '시나리오 삭제 실패');
+  }
+  return res.json();
+}

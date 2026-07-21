@@ -41,13 +41,27 @@ if (-not (Test-Path $exePath)) {
 $deployPath = Join-Path $root "deploy"
 Move-Item -Path (Join-Path $root "dist\BarChartCreator") -Destination $deployPath
 
-# 5. data/ 폴더는 빈 상태로 유지 (사용자의 실제 수집 데이터는 배포판에 포함하지 않음)
+# 5. data/ 폴더 정리
+#    - 실제 수집 데이터(xlsx)는 배포판에 포함하지 않는다 (deploy/data/에는 애초에 없음).
+#    - 저장/불러오기(시나리오) 데이터는 개발자가 만든 내용을 그대로 배포판에 포함시킨다.
 $dataPath = Join-Path $deployPath "data"
-if (Test-Path $dataPath) {
-    Get-ChildItem -Path $dataPath -Recurse -Force | Remove-Item -Recurse -Force
-} else {
-    New-Item -ItemType Directory -Path $dataPath | Out-Null
+$scenariosDestPath = Join-Path $dataPath "scenarios"
+New-Item -ItemType Directory -Path $scenariosDestPath -Force | Out-Null
+
+$scenariosSrcPath = Join-Path $root "data\scenarios"
+$scenarioCount = 0
+if (Test-Path $scenariosSrcPath) {
+    $scenarioFiles = Get-ChildItem -Path $scenariosSrcPath -Filter "*.json" -File
+    foreach ($jsonFile in $scenarioFiles) {
+        Copy-Item -Path $jsonFile.FullName -Destination $scenariosDestPath -Force
+        $pklFile = Join-Path $scenariosSrcPath ($jsonFile.BaseName + ".pkl")
+        if (Test-Path $pklFile) {
+            Copy-Item -Path $pklFile -Destination $scenariosDestPath -Force
+        }
+    }
+    $scenarioCount = $scenarioFiles.Count
 }
+Write-Host "시나리오 저장 데이터 ${scenarioCount}건 포함됨 (deploy/data/scenarios/)"
 
 # 6. README.txt 작성
 $readme = @'
@@ -69,6 +83,8 @@ BarChart Creator 배포판
 
 [데이터 폴더]
 - data\ 폴더는 검색/업로드한 엑셀 데이터가 저장되는 공간이며, 최초 배포 시에는 비어 있습니다.
+- data\scenarios\ 폴더는 예외로, 개발자가 미리 저장해 둔 시나리오가 포함되어 있을 수 있습니다.
+  화면 상단의 "저장/불러오기" 버튼을 눌러 바로 확인하고 불러올 수 있습니다.
 '@
 Set-Content -Path (Join-Path $deployPath "README.txt") -Value $readme -Encoding UTF8
 

@@ -77,13 +77,17 @@ function renderBarchart(data) {
   let maxDate = null;
   for (const ac of aircraft) {
     for (const fl of ac.flights) {
-      if (fl.ro_kst) {
-        const d = new Date(fl.ro_kst);
+      // RO/RI 둘 다 결측이면 STD/STA로 폴백 표출되므로(위 BAR 렌더링 로직과 동일 기준),
+      // X축 범위 산출도 같은 기준을 써야 폴백 바가 범위 밖으로 밀려 안 그려지는 것을 막는다.
+      const startIso = fl.ro_kst || fl.std_kst;
+      const endIso = fl.ri_kst || fl.sta_kst;
+      if (startIso) {
+        const d = new Date(startIso);
         if (!minDate || d < minDate) minDate = new Date(d);
         if (!maxDate || d > maxDate) maxDate = new Date(d);
       }
-      if (fl.ri_kst) {
-        const d = new Date(fl.ri_kst);
+      if (endIso) {
+        const d = new Date(endIso);
         if (!maxDate || d > maxDate) maxDate = new Date(d);
       }
     }
@@ -415,13 +419,19 @@ function renderBarchart(data) {
       if (yBase + rowH < MARGIN.top || yBase > viewH) return;
 
       ac.flights.forEach((fl, idx) => {
-        if (!fl.ro_kst || !fl.ri_kst) return;
+        // RO/RI 둘 다 결측이면 STD/STA로 폴백 표출, 하나만 결측이면 기존대로 바를 그리지 않음
+        const bothMissing = !fl.ro_kst && !fl.ri_kst;
+        if (bothMissing) {
+          if (!fl.std_kst || !fl.sta_kst) return;
+        } else if (!fl.ro_kst || !fl.ri_kst) {
+          return;
+        }
 
         const lane = fl.lane || 0;
         const barY = yBase + lane * scaledRowH + (scaledRowH - scaledBarH) / 2;
 
-        const std = new Date(fl.ro_kst);
-        const sta = new Date(fl.ri_kst);
+        const std = new Date(bothMissing ? fl.std_kst : fl.ro_kst);
+        const sta = new Date(bothMissing ? fl.sta_kst : fl.ri_kst);
 
         // 지연 BAR: STD_KST ~ RO_KST, RO가 STD보다 늦은 경우만 표출
         let delayDrawn = false;
@@ -501,7 +511,7 @@ function renderBarchart(data) {
           }
         } else {
           barRect = barGroup.append('rect')
-            .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}`)
+            .attr('class', `bar ${colorClass}${fl.connection_error ? ' bar-error' : ''}${bothMissing ? ' bar-planned' : ''}`)
             .attr('x', x1)
             .attr('y', barY)
             .attr('width', barW)
@@ -569,22 +579,27 @@ function renderBarchart(data) {
           }
         }
 
-        // Ground Time
-        if (showText && idx > 0 && fl.ground_time_before !== null) {
+        // Ground Time — 실제 GT(ground_time_before) 우선, 이전/현재 편이 RO/RI 결측으로
+        // STD/STA 폴백 표출된 경우(실제 GT 계산 불가)에는 계획 GT(planned_gt)로 대체 표출
+        if (showText && idx > 0) {
           const prevFl = ac.flights[idx - 1];
-          if (prevFl.ri_kst) {
-            const prevSta = new Date(prevFl.ri_kst);
-            const gtX = (shiftedXScale(prevSta) + shiftedXScale(std)) / 2;
+          const prevBothMissing = !prevFl.ro_kst && !prevFl.ri_kst;
+          const prevEndIso = prevFl.ri_kst || (prevBothMissing ? prevFl.sta_kst : null);
+          const gtValue = fl.ground_time_before !== null ? fl.ground_time_before : fl.planned_gt;
+          if (prevEndIso && gtValue !== null && gtValue !== undefined) {
+            const isPlannedFallback = fl.ground_time_before === null;
+            const prevEnd = new Date(prevEndIso);
+            const gtX = (shiftedXScale(prevEnd) + shiftedXScale(std)) / 2;
             const isDomestic = KOREAN_AIRPORTS.has((fl.depstn || '').trim().toUpperCase())
                             && KOREAN_AIRPORTS.has((fl.arrstn || '').trim().toUpperCase());
-            const isDomWarn = isDomestic && fl.ground_time_before <= 35;
+            const isDomWarn = isDomestic && gtValue <= 35;
             barGroup.append('text')
-              .attr('class', 'gt-label')
+              .attr('class', `gt-label${isPlannedFallback ? ' gt-label-planned' : ''}`)
               .attr('x', gtX)
               .attr('y', barY + scaledBarH / 2)
               .attr('fill', isDomWarn ? '#dc2626' : '#6b7280')
               .attr('font-weight', isDomWarn ? '700' : 'normal')
-              .text(`${fl.ground_time_before}분`);
+              .text(`${gtValue}분`);
           }
         }
 
@@ -605,6 +620,8 @@ function renderBarchart(data) {
         barRect.on('mousemove', (event) => {
           if (dragState) return;
           const gtText = fl.ground_time_before !== null ? `${fl.ground_time_before}분` : '-';
+          const plannedGtText = fl.planned_gt !== null && fl.planned_gt !== undefined ? `${fl.planned_gt}분` : '-';
+          const securedGtText = fl.secured_gt !== null && fl.secured_gt !== undefined ? `${fl.secured_gt}분` : '-';
           const btText = fl.blocktime !== null && fl.blocktime !== undefined ? `${fl.blocktime}분` : '-';
           const dlaText = (v) => (v !== null && v !== undefined) ? `${v}분` : '-';
           const stdDelayText = (roIso) => {
@@ -621,9 +638,22 @@ function renderBarchart(data) {
           const changed = !!fl.scenario_changed;
           tooltip.classList.add('tt-wide');
 
-          const compareRow = (label, acno, actype, roIso, riIso, cnx, dep, atc, extraClass) => `
+          // STD/STA/계획GT는 스케줄 변경(W26 적용 등) 시나리오에서만 원본과 달라질 수 있다 —
+          // 다를 때만 "(기존 ...)"를 옆에 붙여 보여주고, 같으면 기존과 동일하게 단일 표시.
+          const withOrig = (curText, origText) =>
+            (origText !== null && origText !== '-' && origText !== curText)
+              ? `<span class="tt-new-val">${curText}</span><span class="tt-orig-val">(기존 ${origText})</span>`
+              : curText;
+          const stdText = withOrig(formatKST(fl.std_kst), fl.std_kst_orig ? formatKST(fl.std_kst_orig) : null);
+          const staText = withOrig(formatKST(fl.sta_kst), fl.sta_kst_orig ? formatKST(fl.sta_kst_orig) : null);
+          const plannedGtOrigDisplay = (fl.planned_gt_orig !== null && fl.planned_gt_orig !== undefined)
+            ? `${fl.planned_gt_orig}분` : null;
+          const plannedGtDisplay = withOrig(plannedGtText, plannedGtOrigDisplay);
+
+          const compareRow = (label, predFltno, acno, actype, roIso, riIso, cnx, dep, atc, extraClass) => `
             <tr class="${extraClass || ''}">
               <td class="tt-row-label">${label}</td>
+              <td>${predFltno || '-'}</td>
               <td>${acno || '-'}</td>
               <td>${actype || '-'}</td>
               <td>${formatKST(roIso)}</td>
@@ -635,13 +665,13 @@ function renderBarchart(data) {
             </tr>`;
 
           const existingRow = compareRow(
-            '기존', fl.acno_orig || ac.acno, fl.actype_orig || fl.actype,
+            '기존', fl.pred_fltno_orig || fl.pred_fltno, fl.acno_orig || ac.acno, fl.actype_orig || fl.actype,
             fl.ro_kst_orig || fl.ro_kst, fl.ri_kst_orig || fl.ri_kst,
-            fl.cnx_dla_orig ?? fl.cnx_dla, fl.dep_dla, fl.atc_dla,
+            fl.cnx_dla_orig ?? fl.cnx_dla, fl.dep_dla_orig ?? fl.dep_dla, fl.atc_dla,
           );
           const changedRow = changed
             ? compareRow(
-                '변경', ac.acno, fl.actype, fl.ro_kst, fl.ri_kst,
+                '변경', fl.pred_fltno, ac.acno, fl.actype, fl.ro_kst, fl.ri_kst,
                 fl.cnx_dla, fl.dep_dla, fl.atc_dla, 'tt-changed-row',
               )
             : '';
@@ -649,15 +679,15 @@ function renderBarchart(data) {
           tooltip.classList.remove('hidden');
           tooltip.innerHTML = `
             <div class="tt-title">${fl.fltno} (${fl.depstn}→${fl.arrstn})</div>
-            <div class="tt-row"><span class="tt-label">STD</span><span>${formatKST(fl.std_kst)}</span></div>
-            <div class="tt-row"><span class="tt-label">STA</span><span>${formatKST(fl.sta_kst)}</span></div>
+            <div class="tt-row"><span class="tt-label">STD</span><span>${stdText}</span></div>
+            <div class="tt-row"><span class="tt-label">STA</span><span>${staText}</span></div>
             <div class="tt-row"><span class="tt-label">NAT</span><span>${fl.nat || '-'}</span></div>
             <div class="tt-row"><span class="tt-label">MTTT</span><span>${fl.mttt ?? '-'}</span></div>
             <div class="tt-compare-wrap">
               <table class="tt-compare-table">
                 <thead>
                   <tr>
-                    <th></th><th>기번</th><th>기종</th><th>RO</th><th>RI</th>
+                    <th></th><th>연결편정보</th><th>기번</th><th>기종</th><th>RO</th><th>RI</th>
                     <th>지연시간</th><th>연결지연</th><th>출발지연</th><th>관제지연</th>
                   </tr>
                 </thead>
@@ -665,7 +695,9 @@ function renderBarchart(data) {
               </table>
             </div>
             <div class="tt-row"><span class="tt-label">BT</span><span>${btText}</span></div>
-            <div class="tt-row"><span class="tt-label">GT</span><span>${gtText}</span></div>
+            <div class="tt-row"><span class="tt-label">계획 GT</span><span>${plannedGtDisplay}</span></div>
+            <div class="tt-row"><span class="tt-label">확보 GT</span><span>${securedGtText}</span></div>
+            <div class="tt-row"><span class="tt-label">실제 GT</span><span>${gtText}</span></div>
             <div class="tt-row"><span class="tt-label">상태</span><span>${fl.status}</span></div>
           `;
           positionTooltip(event, tooltip);

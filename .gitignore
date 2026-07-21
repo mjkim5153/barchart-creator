@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 data/*.xlsx
+data/scenarios/
 .env
 *.egg-info/
 dist/
