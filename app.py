@@ -680,15 +680,19 @@ def _aggregate_ontime_table(records: list, date_filter: str, aircraft_filter: st
 
     by_date: dict = {}
     for r in filtered:
-        d = by_date.setdefault(r['date'], {'total': 0, 'delayed': 0})
+        d = by_date.setdefault(r['date'], {'total': 0, 'delayed': 0, 'delay_sum': 0.0})
         d['total'] += 1
         if r['delay_min'] is not None and r['delay_min'] > threshold:
             d['delayed'] += 1
+        # 지연시간은 지연기준(threshold)과 무관하게 지연(RO>STD)편의 지연분을 전부 합산
+        if r['delay_min'] is not None and r['delay_min'] > 0:
+            d['delay_sum'] += r['delay_min']
 
     rows = [
         {
             '날짜': date_val,
             '운항편수': v['total'],
+            '지연시간(분)': round(v['delay_sum'], 1),
             '지연편수': v['delayed'],
             '정시율(%)': round((1 - v['delayed'] / v['total']) * 100, 1) if v['total'] else 0.0,
         }
@@ -698,9 +702,11 @@ def _aggregate_ontime_table(records: list, date_filter: str, aircraft_filter: st
     if date_filter == 'all' and rows:
         total = len(filtered)
         delayed = sum(1 for r in filtered if r['delay_min'] is not None and r['delay_min'] > threshold)
+        delay_sum = sum(r['delay_min'] for r in filtered if r['delay_min'] is not None and r['delay_min'] > 0)
         rows.insert(0, {
             '날짜': '누적',
             '운항편수': total,
+            '지연시간(분)': round(delay_sum, 1),
             '지연편수': delayed,
             '정시율(%)': round((1 - delayed / total) * 100, 1) if total else 0.0,
         })

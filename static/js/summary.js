@@ -96,15 +96,18 @@ function _renderOntimeTableInto(records, containerId, filters) {
 
   const byDate = {};
   filtered.forEach(r => {
-    if (!byDate[r.date]) byDate[r.date] = { total: 0, delayed: 0 };
+    if (!byDate[r.date]) byDate[r.date] = { total: 0, delayed: 0, delaySum: 0 };
     byDate[r.date].total += 1;
     if (r.delay_min !== null && r.delay_min > threshold) byDate[r.date].delayed += 1;
+    // 지연시간은 지연기준(threshold)과 무관하게 지연(RO>STD)편의 지연분을 전부 합산
+    if (r.delay_min !== null && r.delay_min > 0) byDate[r.date].delaySum += r.delay_min;
   });
 
   const rows = Object.entries(byDate)
     .map(([date, v]) => ({
       date,
       total: v.total,
+      delaySum: Math.round(v.delaySum * 10) / 10,
       delayed: v.delayed,
       rate: v.total > 0 ? Math.round((1 - v.delayed / v.total) * 1000) / 10 : 0,
     }))
@@ -114,9 +117,11 @@ function _renderOntimeTableInto(records, containerId, filters) {
   if (dateFilter === 'all' && rows.length > 0) {
     const totalCount = filtered.length;
     const delayedCount = filtered.filter(r => r.delay_min !== null && r.delay_min > threshold).length;
+    const delaySumTotal = filtered.reduce((sum, r) => sum + (r.delay_min !== null && r.delay_min > 0 ? r.delay_min : 0), 0);
     rows.unshift({
       date: '누적',
       total: totalCount,
+      delaySum: Math.round(delaySumTotal * 10) / 10,
       delayed: delayedCount,
       rate: totalCount > 0 ? Math.round((1 - delayedCount / totalCount) * 1000) / 10 : 0,
     });
@@ -125,7 +130,7 @@ function _renderOntimeTableInto(records, containerId, filters) {
   const table = document.createElement('table');
   const thead = table.createTHead();
   const hRow = thead.insertRow();
-  ['날짜', '운항편수', '지연편수', '정시율'].forEach(h => {
+  ['날짜', '운항편수', '지연시간', '지연편수', '정시율'].forEach(h => {
     const th = document.createElement('th');
     th.textContent = h;
     hRow.appendChild(th);
@@ -135,7 +140,7 @@ function _renderOntimeTableInto(records, containerId, filters) {
   rows.forEach(r => {
     const tr = tbody.insertRow();
     if (r.date === '누적') tr.classList.add('ontime-row-total');
-    [r.date, `${r.total}`, `${r.delayed}`, `${r.rate}%`].forEach(v => {
+    [r.date, `${r.total}`, `${r.delaySum}분`, `${r.delayed}`, `${r.rate}%`].forEach(v => {
       const td = tr.insertCell();
       td.textContent = v;
     });
